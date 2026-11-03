@@ -15,7 +15,8 @@ zstd, slimming) has merged in both repos.
 | smoke binary | `$out/libexec/nix-software-center/nsc-backend-smoke` | headless; same backend functions as the UI; reads `NSC_PKGDB` |
 | AppStream data | `nix/appstream.nix` | snowfallorg/nixos-appstream-data, free section, 64/128 px icons |
 
-The app only runs `nix profile list --json|add|remove|upgrade`. It knows nothing about
+The app only runs `nix --version` and `nix profile list --json|add|remove|upgrade` (`install` on a Nix
+without `add`; element names and `--all` need 2.20). It knows nothing about
 home-manager, profile hooks or kww; success is the exit code, the installed list is re-read
 from `nix profile list --json` after each operation, and progress comes from `json-log-path`
 (a unix socket passed through `NIX_CONFIG`), so nested `nix` calls a hook makes show up too.
