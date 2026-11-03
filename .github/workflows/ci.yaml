@@ -67,3 +67,13 @@ jobs:
               sqlite3 "$db" "select sum(length(description)), sum(length(longdescription)), sum(length(license)), sum(length(platforms)), sum(length(maintainers)) from meta"
             } | tee -a "$GITHUB_STEP_SUMMARY"
           '
+
+  cargo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: test backend
+        run: cargo test -p nsc-backend --locked
+      - name: build smoke binary
+        run: cargo build -p nsc-backend --features smoke --locked

@@ -1,0 +1,1 @@
+{"elements":{"hello":{"active":true,"attrPath":"legacyPackages.aarch64-linux.hello","originalUrl":"flake:nixpkgs","url":"flake:nixpkgs","outputs":["out"],"priority":5,"storePaths":["/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-hello-2.12.1"]}},"version":3}

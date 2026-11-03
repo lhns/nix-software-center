@@ -34,7 +34,8 @@ image = "0.24"
 spdx = "0.10"
 
 anyhow = "1.0"
+nsc-backend = { path = "nsc-backend" }
 
 [workspace]
-members = [".", "nsc-helper"]
-default-members = [".", "nsc-helper"]
+members = [".", "nsc-helper", "nsc-backend"]
+default-members = [".", "nsc-helper", "nsc-backend"]

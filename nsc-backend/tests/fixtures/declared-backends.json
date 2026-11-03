@@ -1,0 +1,6 @@
+{"elements":{
+ "hello":{"backend":"declaration","attrPath":"legacyPackages.x86_64-linux.hello","originalUrl":"flake:nixpkgs","url":"path:/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-source?lastModified=0&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D","outputs":null,"priority":5,"storePaths":[]},
+ "mytool":{"backend":"declaration","attrPath":"packages.x86_64-linux.default","originalUrl":"github:owner/repo","url":"github:owner/repo/0123456789abcdef0123456789abcdef01234567?narHash=sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB%3D","outputs":["out"],"priority":5,"storePaths":[]},
+ "jq":{"backend":"profile","active":true,"attrPath":"legacyPackages.x86_64-linux.jq","originalUrl":"flake:nixpkgs","url":"github:NixOS/nixpkgs/cccccccccccccccccccccccccccccccccccccccc?narHash=sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC%3D","outputs":["out"],"priority":5,"storePaths":["/nix/store/dddddddddddddddddddddddddddddddd-jq-1.7.1-bin"]},
+ "home-manager-path":{"backend":"profile","active":true,"priority":5,"storePaths":["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-home-manager-path"]}
+},"version":3}
