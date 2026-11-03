@@ -1,5 +1,6 @@
 use super::pkgpage::{InstallType, PkgAction, PkgMsg, WorkPkg};
 use super::rebuild::RebuildMsg;
+use super::userops;
 use super::window::{SystemPkgs, UserPkgs, REBUILD_BROKER};
 use log::*;
 use nix_data::config::configfile::NixDataConfig;
@@ -82,6 +83,7 @@ impl Worker for InstallAsyncHandler {
                             match self.userpkgs {
                                 UserPkgs::Env => {
                                     self.process = Some(relm4::spawn(async move {
+                                        let _lock = nsc_backend::run::lock().await;
                                         let mut p = tokio::process::Command::new("nix-env")
                                             .arg("-iA")
                                             .arg(format!("nixos.{}", work.pkg))
@@ -123,47 +125,11 @@ impl Worker for InstallAsyncHandler {
                                     }));
                                 }
                                 UserPkgs::Profile => {
+                                    REBUILD_BROKER.send(RebuildMsg::Show);
+                                    let op = userops::Op::begin();
                                     self.process = Some(relm4::spawn(async move {
-                                        let mut p = tokio::process::Command::new("nix")
-                                            .arg("profile")
-                                            .arg("install")
-                                            .arg(format!("nixpkgs#{}", work.pkg))
-                                            .arg("--impure")
-                                            .kill_on_drop(true)
-                                            .stdout(Stdio::piped())
-                                            .stderr(Stdio::piped())
-                                            .spawn()
-                                            .expect("Failed to run nix profile");
-
-                                        let stderr = p.stderr.take().unwrap();
-                                        let reader = tokio::io::BufReader::new(stderr);
-
-                                        let mut lines = reader.lines();
-                                        while let Ok(Some(line)) = lines.next_line().await {
-                                            trace!("CAUGHT LINE: {}", line);
-                                        }
-
-                                        match p.wait().await {
-                                            Ok(o) => {
-                                                if o.success() {
-                                                    info!(
-                                                        "Removed user package: {} success",
-                                                        work.pkg
-                                                    );
-                                                    sender.output(PkgMsg::FinishedProcess(work));
-                                                } else {
-                                                    warn!(
-                                                        "Removed user package: {} failed",
-                                                        work.pkg
-                                                    );
-                                                    sender.output(PkgMsg::FailedProcess(work));
-                                                }
-                                            }
-                                            Err(e) => {
-                                                warn!("Error removing user package: {}", e);
-                                                sender.output(PkgMsg::FailedProcess(work));
-                                            }
-                                        }
+                                        let ok = userops::add(&op, &work.pkg).await;
+                                        finish(&sender, work, ok);
                                     }));
                                 }
                             }
@@ -173,6 +139,7 @@ impl Worker for InstallAsyncHandler {
                             match self.userpkgs {
                                 UserPkgs::Env => {
                                     self.process = Some(relm4::spawn(async move {
+                                        let _lock = nsc_backend::run::lock().await;
                                         let mut p = tokio::process::Command::new("nix-env")
                                             .arg("-e")
                                             .arg(&work.pname)
@@ -212,48 +179,11 @@ impl Worker for InstallAsyncHandler {
                                     }));
                                 }
                                 UserPkgs::Profile => {
+                                    REBUILD_BROKER.send(RebuildMsg::Show);
+                                    let op = userops::Op::begin();
                                     self.process = Some(relm4::spawn(async move {
-                                        let mut p = tokio::process::Command::new("nix")
-                                            .arg("profile")
-                                            .arg("remove")
-                                            .arg(&format!(
-                                                "legacyPackages.x86_64-linux.{}",
-                                                work.pkg
-                                            ))
-                                            .kill_on_drop(true)
-                                            .stdout(Stdio::piped())
-                                            .stderr(Stdio::piped())
-                                            .spawn()
-                                            .expect("Failed to run nix profile");
-                                        let stderr = p.stderr.take().unwrap();
-                                        let reader = tokio::io::BufReader::new(stderr);
-
-                                        let mut lines = reader.lines();
-                                        while let Ok(Some(line)) = lines.next_line().await {
-                                            trace!("CAUGHT LINE: {}", line);
-                                        }
-                                        match p.wait().await {
-                                            Ok(o) => {
-                                                if o.success() {
-                                                    info!(
-                                                        "Removed user package: {} success",
-                                                        work.pkg
-                                                    );
-                                                    sender.output(PkgMsg::FinishedProcess(work));
-                                                } else {
-                                                    warn!(
-                                                        "Removed user package: {} failed",
-                                                        work.pkg
-                                                    );
-                                                    sender.output(PkgMsg::FailedProcess(work));
-                                                }
-                                            }
-
-                                            Err(e) => {
-                                                warn!("Error removing user package: {}", e);
-                                                sender.output(PkgMsg::FailedProcess(work));
-                                            }
-                                        }
+                                        let ok = userops::remove(&op, &work.pkg).await;
+                                        finish(&sender, work, ok);
                                     }));
                                 }
                             }
@@ -326,6 +256,10 @@ impl Worker for InstallAsyncHandler {
             }
             InstallAsyncHandlerMsg::CancelProcess => {
                 info!("CANCELING PROCESS");
+                // A profile operation winds down through Nix and reports itself.
+                if userops::cancel_current() {
+                    return;
+                }
                 if let Some(p) = &mut self.process {
                     p.abort()
                 }
@@ -338,12 +272,24 @@ impl Worker for InstallAsyncHandler {
     }
 }
 
+/// Ends a profile operation in the dialog and in the package page's queue.
+fn finish(sender: &ComponentSender<InstallAsyncHandler>, work: WorkPkg, ok: bool) {
+    if ok {
+        REBUILD_BROKER.send(RebuildMsg::FinishSuccess);
+        sender.output(PkgMsg::FinishedProcess(work));
+    } else {
+        REBUILD_BROKER.send(RebuildMsg::FinishError(None));
+        sender.output(PkgMsg::FailedProcess(work));
+    }
+}
+
 async fn installsys(
     pkg: String,
     action: PkgAction,
     config: NixDataConfig,
     _sender: ComponentSender<InstallAsyncHandler>,
 ) -> Result<bool> {
+    let _lock = nsc_backend::run::lock().await;
     let systemconfig = config.systemconfig.unwrap_or_default();
     let flakeargs = if let Some(flake) = config.flake {
         if let Some(flakearg) = config.flakearg {

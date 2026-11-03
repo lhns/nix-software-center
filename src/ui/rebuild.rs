@@ -1,18 +1,24 @@
 use super::window::AppMsg;
 use adw::prelude::*;
 use log::{info, trace};
+use nsc_backend::progress::Summary;
 use relm4::*;
-use sourceview5::prelude::*;
 
 #[tracker::track]
 pub struct RebuildModel {
     hidden: bool,
-    text: String,
+    #[tracker::do_not_track]
+    buffer: gtk::TextBuffer,
     status: RebuildStatus,
     config: String,
     path: String,
     flake: Option<String>,
-    scheme: Option<sourceview5::StyleScheme>,
+    /// Nix reported expected work; `None` pulses the bar instead.
+    fraction: Option<f64>,
+    statustext: String,
+    /// A user operation is running that Cancel can stop.
+    cancellable: bool,
+    cancelling: bool,
 }
 
 #[derive(Debug)]
@@ -21,8 +27,10 @@ pub enum RebuildMsg {
     FinishSuccess,
     FinishError(Option<String>),
     UpdateText(String),
+    Progress(Summary),
+    SetCancellable(bool),
+    Cancel,
     Close,
-    SetScheme(String),
     Quit,
 }
 
@@ -70,8 +78,23 @@ impl SimpleComponent for RebuildModel {
                             set_height_request: 60,
                         },
                         gtk::Label {
-                            set_label: "Building...",
+                            set_label: "Working…",
                             add_css_class: "title-1",
+                        },
+                        #[name(progressbar)]
+                        gtk::ProgressBar {
+                            set_margin_start: 20,
+                            set_margin_end: 20,
+                        },
+                        gtk::Label {
+                            #[track(model.changed(RebuildModel::statustext()))]
+                            set_label: &model.statustext,
+                            #[track(model.changed(RebuildModel::statustext()))]
+                            set_visible: !model.statustext.is_empty(),
+                            add_css_class: "dim-label",
+                            set_ellipsize: gtk::pango::EllipsizeMode::End,
+                            set_margin_start: 20,
+                            set_margin_end: 20,
                         },
                     },
                     #[name(success)]
@@ -87,10 +110,6 @@ impl SimpleComponent for RebuildModel {
                             set_label: "Done!",
                             add_css_class: "title-1",
                         },
-                        gtk::Label {
-                            set_label: "Rebuild successful!",
-                            add_css_class: "dim-label",
-                        }
                     },
                     #[name(error)]
                     gtk::Box {
@@ -106,7 +125,7 @@ impl SimpleComponent for RebuildModel {
                             add_css_class: "title-1",
                         },
                         gtk::Label {
-                            set_label: "Rebuild failed! See below for error message.",
+                            set_label: "Failed — see output below.",
                             add_css_class: "dim-label",
                         }
                     }
@@ -118,7 +137,7 @@ impl SimpleComponent for RebuildModel {
                         set_max_content_height: 500,
                         set_min_content_height: 100,
                         #[name(outview)]
-                        sourceview5::View {
+                        gtk::TextView {
                             set_editable: false,
                             set_cursor_visible: false,
                             set_monospace: true,
@@ -128,13 +147,7 @@ impl SimpleComponent for RebuildModel {
                             set_vexpand: true,
                             set_hexpand: true,
                             set_vscroll_policy: gtk::ScrollablePolicy::Minimum,
-                            #[wrap(Some)]
-                            set_buffer: outbuf = &sourceview5::Buffer {
-                                #[track(model.changed(RebuildModel::scheme()))]
-                                set_style_scheme: model.scheme.as_ref(),
-                                #[track(model.changed(RebuildModel::text()))]
-                                set_text: &model.text,
-                            }
+                            set_buffer: Some(&buffer),
                         }
                     }
                 },
@@ -142,8 +155,18 @@ impl SimpleComponent for RebuildModel {
                     add_css_class: "dialog-action-area",
                     set_orientation: gtk::Orientation::Horizontal,
                     set_homogeneous: true,
-                    #[track(model.changed(RebuildModel::status()))]
-                    set_visible: model.status != RebuildStatus::Building,
+                    #[track(model.changed(RebuildModel::status()) || model.changed(RebuildModel::cancellable()))]
+                    set_visible: model.status != RebuildStatus::Building || model.cancellable,
+                    gtk::Button {
+                        set_label: "Cancel",
+                        #[track(model.changed(RebuildModel::status()) || model.changed(RebuildModel::cancellable()))]
+                        set_visible: model.status == RebuildStatus::Building && model.cancellable,
+                        #[track(model.changed(RebuildModel::cancelling()))]
+                        set_sensitive: !model.cancelling,
+                        connect_clicked[sender] => move |_| {
+                            sender.input(RebuildMsg::Cancel)
+                        }
+                    },
                     gtk::Button {
                         set_label: "Close",
                         #[track(model.changed(RebuildModel::status()))]
@@ -168,13 +191,14 @@ impl SimpleComponent for RebuildModel {
     }
 
     fn post_view() {
-        let adj = scrollwindow.vadjustment();
-        if model.status == RebuildStatus::Building {
-            adj.set_upper(adj.upper() + 20.0);
+        match model.fraction {
+            Some(f) => progressbar.set_fraction(f),
+            None => progressbar.pulse(),
         }
-        adj.set_value(adj.upper());
+        if let Some(end) = model.buffer.mark("end") {
+            outview.scroll_to_mark(&end, 0.0, false, 0.0, 0.0);
+        }
         if model.status != RebuildStatus::Building {
-            outview.scroll_to_mark(&outview.buffer().get_insert(), 0.0, true, 0.0, 0.0);
             scrollwindow.hadjustment().set_value(0.0);
         }
     }
@@ -185,14 +209,20 @@ impl SimpleComponent for RebuildModel {
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
 
+        let buffer = gtk::TextBuffer::new(None);
+        buffer.create_mark(Some("end"), &buffer.end_iter(), false);
+
         let model = RebuildModel {
             hidden: true,
-            text: String::new(),
+            buffer: buffer.clone(),
             status: RebuildStatus::Building,
             config: String::new(),
             path: String::new(),
             flake: None,
-            scheme: None,
+            fraction: None,
+            statustext: String::new(),
+            cancellable: false,
+            cancelling: false,
             tracker: 0,
         };
 
@@ -206,39 +236,67 @@ impl SimpleComponent for RebuildModel {
         match msg {
             RebuildMsg::Show => {
                 self.update_hidden(|x| *x = false);
-                self.update_text(|x| x.clear());
+                self.buffer.set_text("");
                 self.set_status(RebuildStatus::Building);
+                self.set_fraction(None);
+                self.set_statustext(String::new());
+                self.set_cancellable(false);
+                self.set_cancelling(false);
             }
             RebuildMsg::UpdateText(s) => {
                 info!("RebuildMsg::UpdateText({})", s);
-                let newtext = if self.text.is_empty() {
-                    s
-                } else {
-                    format!("{}\n{}", self.text, s)
-                };
-                self.set_text(newtext);
-                trace!("NEWTEXT: {}", self.text);
+                self.append(&s);
+            }
+            RebuildMsg::Progress(p) => {
+                self.set_fraction(p.fraction);
+                let mut parts = vec![];
+                if let Some(s) = p.status {
+                    parts.push(s);
+                }
+                if p.builds.1 > 0 {
+                    parts.push(format!("builds {}/{}", p.builds.0, p.builds.1));
+                }
+                if p.downloads.1 > 0 {
+                    parts.push(format!("downloads {}/{}", p.downloads.0, p.downloads.1));
+                }
+                self.set_statustext(parts.join(" — "));
+            }
+            RebuildMsg::SetCancellable(c) => {
+                self.set_cancellable(c);
+            }
+            RebuildMsg::Cancel => {
+                self.set_cancelling(true);
+                crate::ui::userops::cancel_current();
             }
             RebuildMsg::FinishSuccess => {
                 self.set_status(RebuildStatus::Success);
             }
             RebuildMsg::FinishError(msg) => {
                 if let Some(s) = msg {
-                    self.set_text(s)
+                    self.buffer.set_text(&s);
                 }
                 self.update_hidden(|x| *x = false);
                 self.set_status(RebuildStatus::Error);
             }
             RebuildMsg::Close => {
                 self.update_hidden(|x| *x = true);
-                self.update_text(|x| x.clear());
-            }
-            RebuildMsg::SetScheme(scheme) => {
-                self.set_scheme(sourceview5::StyleSchemeManager::default().scheme(&scheme));
+                self.buffer.set_text("");
             }
             RebuildMsg::Quit => {
                 sender.output(AppMsg::Close);
             }
         }
+    }
+}
+
+impl RebuildModel {
+    /// One line at the end of the buffer.
+    fn append(&self, line: &str) {
+        let mut end = self.buffer.end_iter();
+        if self.buffer.char_count() > 0 {
+            self.buffer.insert(&mut end, "\n");
+        }
+        self.buffer.insert(&mut end, line);
+        trace!("APPENDED: {}", line);
     }
 }

@@ -5,7 +5,7 @@ use relm4::*;
 use std::{fs, path::Path, process::Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-use crate::ui::{rebuild::RebuildMsg, window::REBUILD_BROKER};
+use crate::ui::{rebuild::RebuildMsg, userops, window::REBUILD_BROKER};
 
 use super::{
     updatepage::UpdatePageMsg,
@@ -245,6 +245,10 @@ async fn runcmd(
     syspkgs: SystemPkgs,
     rmpkgs: Option<Vec<String>>,
 ) -> Result<bool> {
+    if syspkgs == SystemPkgs::None {
+        return Ok(true);
+    }
+    let _lock = nsc_backend::run::lock().await;
     let systemconfig = config.systemconfig.unwrap_or_default();
     let flakeargs = if let Some(flake) = config.flake {
         if let Some(flakearg) = config.flakearg {
@@ -428,6 +432,7 @@ async fn runcmd(
 }
 
 async fn updateenv() -> Result<bool> {
+    let _lock = nsc_backend::run::lock().await;
     let mut cmd = tokio::process::Command::new("nix-env")
         .arg("-u")
         .stderr(Stdio::piped())
@@ -449,54 +454,6 @@ async fn updateenv() -> Result<bool> {
 }
 
 async fn updateprofile(rmpkgs: Option<Vec<String>>) -> Result<bool> {
-    if let Some(rmpkgs) = rmpkgs {
-        if !rmpkgs.is_empty() {
-            let mut cmd = tokio::process::Command::new("nix")
-                .arg("profile")
-                .arg("remove")
-                .args(
-                    &rmpkgs
-                        .iter()
-                        .map(|x| format!("legacyPackages.x86_64-linux.{}", x))
-                        .collect::<Vec<String>>(),
-                )
-                // Allow updating potential unfree packages
-                .arg("--impure")
-                .stderr(Stdio::piped())
-                .spawn()?;
-
-            let stderr = cmd.stderr.take().unwrap();
-            let reader = tokio::io::BufReader::new(stderr);
-
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                REBUILD_BROKER.send(RebuildMsg::UpdateText(line.to_string()));
-                trace!("CAUGHT NIX PROFILE LINE: {}", line);
-            }
-            cmd.wait().await?;
-        }
-    }
-
-    let mut cmd = tokio::process::Command::new("nix")
-        .arg("profile")
-        .arg("upgrade")
-        .arg(".*")
-        // Allow updating potential unfree packages
-        .arg("--impure")
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    let stderr = cmd.stderr.take().unwrap();
-    let reader = tokio::io::BufReader::new(stderr);
-
-    let mut lines = reader.lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        REBUILD_BROKER.send(RebuildMsg::UpdateText(line.to_string()));
-        trace!("CAUGHT NIX PROFILE LINE: {}", line);
-    }
-    if cmd.wait().await?.success() {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    let op = userops::Op::begin();
+    Ok(userops::upgrade_all(&op, &rmpkgs.unwrap_or_default()).await)
 }

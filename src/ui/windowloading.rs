@@ -41,8 +41,11 @@ impl Worker for WindowAsyncHandler {
                     let mut catpkgs: HashMap<PkgCategory, Vec<String>> = HashMap::new();
 
                     let nixos = Path::new("/etc/NIXOS").exists();
+                    let fixeddb = pkgdb_override();
 
-                    let pkgdb = if nixos {
+                    let pkgdb = if let Some(p) = &fixeddb {
+                        p.clone()
+                    } else if nixos {
                         match nix_data::cache::nixos::nixospkgs().await {
                             Ok(p) => p,
                             Err(e) => {
@@ -82,7 +85,9 @@ impl Worker for WindowAsyncHandler {
 
                     let nixpkgsdb = match userpkgs {
                         UserPkgs::Profile => {
-                            if let Ok(x) = nix_data::cache::profile::nixpkgslatest().await {
+                            if fixeddb.is_some() {
+                                fixeddb.clone()
+                            } else if let Ok(x) = nix_data::cache::profile::nixpkgslatest().await {
                                 Some(x)
                             } else {
                                 None
@@ -444,6 +449,9 @@ impl Worker for WindowAsyncHandler {
             }
             WindowAsyncHandlerMsg::UpdateDB(syspkgs, userpkgs) => {
                 relm4::spawn(async move {
+                    if pkgdb_override().is_some() {
+                        return;
+                    }
                     let nixos = Path::new("/etc/NIXOS").exists();
 
                     let _pkgdb = if nixos {
@@ -502,6 +510,19 @@ impl Worker for WindowAsyncHandler {
                     };
                 });
             }
+        }
+    }
+}
+
+/// `NSC_PKGDB`: a prebuilt package database (nix-data schema) used instead of
+/// the downloaded ones.
+pub fn pkgdb_override() -> Option<String> {
+    let path = std::env::var("NSC_PKGDB").ok().filter(|p| !p.is_empty())?;
+    match std::fs::File::open(&path) {
+        Ok(_) => Some(path),
+        Err(e) => {
+            warn!("Ignoring NSC_PKGDB={}: {}", path, e);
+            None
         }
     }
 }
