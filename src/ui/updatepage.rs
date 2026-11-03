@@ -424,6 +424,8 @@ impl SimpleComponent for UpdatePageModel {
             }
             UpdatePageMsg::FailedWorking => {
                 REBUILD_BROKER.send(RebuildMsg::FinishError(None));
+                // A failed or cancelled run may have changed the profile.
+                sender.output(AppMsg::UpdateInstalledPkgs);
             }
             UpdatePageMsg::UpdateOnline(online) => {
                 self.set_online(online);
