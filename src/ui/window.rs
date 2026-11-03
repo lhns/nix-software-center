@@ -43,6 +43,7 @@ use super::{
     rebuild::RebuildModel,
     searchpage::{SearchItem, SearchPageModel, SearchPageMsg},
     unavailabledialog::UnavailableItemModel,
+    userops,
     updatepage::{UpdateItem, UpdatePageInit, UpdatePageModel, UpdatePageMsg, UpdateType},
     welcome::WelcomeModel,
     windowloading::{LoadErrorModel, LoadErrorMsg, WindowAsyncHandler, WindowAsyncHandlerMsg},
@@ -1195,6 +1196,7 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                 let systemconfig = self.config.systemconfig.clone();
                 let syspkgtype = self.syspkgtype.clone();
                 let userpkgtype = self.userpkgtype.clone();
+                let pkgdb = self.pkgdb.clone();
                 sender.oneshot_command(async move {
                     let installedsystempkgs = if let Some(config) = &systemconfig {
                         match syspkgtype {
@@ -1221,14 +1223,16 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                     };
 
                     let installeduserpkgs = match userpkgtype {
-                        UserPkgs::Profile => {
-                            let pkgs = nix_data::cache::profile::getprofilepkgs_versioned().await;
-                            if let Ok(pkgs) = pkgs {
-                                pkgs
-                            } else {
-                                HashMap::new()
+                        UserPkgs::Profile => match userops::installed_versions(&pkgdb).await {
+                            Ok(pkgs) => pkgs,
+                            Err(e) => {
+                                // Nix without `profile list --json`
+                                warn!("nix profile list: {}; reading manifest.json", e);
+                                nix_data::cache::profile::getprofilepkgs_versioned()
+                                    .await
+                                    .unwrap_or_default()
                             }
-                        }
+                        },
                         UserPkgs::Env => {
                             let pkgs = nix_data::cache::channel::getenvpkgs();
                             if let Ok(pkgs) = pkgs {
@@ -1363,28 +1367,29 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                             }
                         }
                         UserPkgs::Profile => {
-                            for installedpkg in self.installeduserpkgs.keys() {
+                            for (installedpkg, installedver) in &self.installeduserpkgs {
                                 debug!("Checking package {}", installedpkg);
-                                let (pname, version): (String, String) = sqlx::query_as(
-                                    "SELECT pname, version FROM pkgs WHERE attribute = $1",
+                                // Entries missing from the database (other flakes,
+                                // renamed attributes) are listed by their key.
+                                let dbrow: Option<(String, String, Option<String>)> = sqlx::query_as(
+                                    "SELECT pname, version, description FROM pkgs LEFT JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = $1",
                                 )
                                 .bind(installedpkg)
-                                .fetch_one(pool)
+                                .fetch_optional(pool)
                                 .await
-                                .unwrap();
-                                let (description,): (String,) = sqlx::query_as(
-                                    "SELECT description FROM meta WHERE attribute = $1",
-                                )
-                                .bind(installedpkg)
-                                .fetch_one(pool)
-                                .await
-                                .unwrap();
-                                let mut name = pname.to_string();
-                                let mut summary = if description.is_empty() {
-                                    None
+                                .ok()
+                                .flatten();
+                                let indb = dbrow.is_some();
+                                let (pname, dbversion, description) = dbrow.unwrap_or_else(|| {
+                                    (installedpkg.clone(), String::new(), None)
+                                });
+                                let version = if installedver.is_empty() {
+                                    dbversion
                                 } else {
-                                    Some(description)
+                                    installedver.clone()
                                 };
+                                let mut name = pname.to_string();
+                                let mut summary = description.filter(|d| !d.is_empty());
                                 let mut icon = None;
                                 if let Some(data) = self.appdata.get(installedpkg) {
                                     if let Some(n) = &data.name {
@@ -1414,17 +1419,22 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                                         .installedpagebusy
                                         .contains(&(installedpkg.clone(), InstallType::User)),
                                 });
+                                if !indb {
+                                    continue;
+                                }
                                 if let Some(latest) = &self.nixpkgsdb {
                                     if let Ok(latestpool) =
                                         &SqlitePool::connect(&format!("sqlite://{}", latest)).await
                                     {
-                                        let (newver,): (String,) = sqlx::query_as(
+                                        let newver: Option<(String,)> = sqlx::query_as(
                                             "SELECT version FROM pkgs WHERE attribute = $1",
                                         )
                                         .bind(installedpkg)
-                                        .fetch_one(latestpool)
+                                        .fetch_optional(latestpool)
                                         .await
-                                        .unwrap();
+                                        .ok()
+                                        .flatten();
+                                        let Some((newver,)) = newver else { continue };
                                         debug!("PROFILE: {} {} {}", installedpkg, version, newver);
                                         if version != newver {
                                             updateuseritems.push(UpdateItem {
@@ -1500,13 +1510,15 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                                     if let Ok(currentpool) =
                                         &SqlitePool::connect(&format!("sqlite://{}", current)).await
                                     {
-                                        let (currver,): (String,) = sqlx::query_as(
+                                        let currver: Option<(String,)> = sqlx::query_as(
                                             "SELECT version FROM pkgs WHERE attribute = $1",
                                         )
                                         .bind(installedpkg)
-                                        .fetch_one(currentpool)
+                                        .fetch_optional(currentpool)
                                         .await
-                                        .unwrap();
+                                        .ok()
+                                        .flatten();
+                                        let Some((currver,)) = currver else { continue };
                                         debug!("SYSTEM: {} {} {}", installedpkg, currver, version);
                                         if version != currver {
                                             updatesystemitems.push(UpdateItem {
