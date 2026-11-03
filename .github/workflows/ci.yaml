@@ -25,3 +25,13 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: build package
         run: nix build .#packages.${{ matrix.system }}.nix-software-center -L
+
+  cargo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: test backend
+        run: cargo test -p nsc-backend --locked
+      - name: build smoke binary
+        run: cargo build -p nsc-backend --features smoke --locked
