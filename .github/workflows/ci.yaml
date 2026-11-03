@@ -26,7 +26,9 @@ jobs:
       - name: build package
         run: nix build .#packages.${{ matrix.system }}.nix-software-center -L
       - name: build appstream data
-        run: nix build .#packages.${{ matrix.system }}.appstream-data -L
+        run: |
+          nix build .#packages.${{ matrix.system }}.appstream-data -L -o appstream
+          du -shL appstream/share/app-info/xmls appstream/share/app-info/icons/nixos/* | tee -a "$GITHUB_STEP_SUMMARY"
       - name: pkgdb-small check
         run: nix build .#checks.${{ matrix.system }}.pkgdb-small -L
 
