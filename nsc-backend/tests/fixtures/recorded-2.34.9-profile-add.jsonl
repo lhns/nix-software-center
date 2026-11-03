@@ -1,0 +1,82 @@
+{"action":"start","id":107374182400,"level":4,"parent":0,"text":"evaluating derivation 'path:/work/flake#packages.x86_64-linux.default'","type":0}
+{"action":"start","id":107374182401,"level":4,"parent":0,"text":"copying \"/work/flake\" to the store","type":0}
+{"action":"stop","id":107374182401}
+{"action":"stop","id":107374182400}
+{"action":"start","id":107374182402,"level":6,"parent":0,"text":"querying info about missing paths","type":0}
+{"action":"start","fields":["https://cache.nixos.org/nix-cache-info"],"id":107374182403,"level":4,"parent":0,"text":"downloading 'https://cache.nixos.org/nix-cache-info'","type":101}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[51,51,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[51,51,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[51,51,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[51,51,0,0],"id":107374182403,"type":105}
+{"action":"result","fields":[51,51,0,0],"id":107374182403,"type":105}
+{"action":"stop","id":107374182403}
+{"action":"start","fields":["/nix/store/9klb3mimm8kcbiqh1qr4ajx5mny3779a-recdemo-1.0","https://cache.nixos.org"],"id":107374182404,"level":4,"parent":0,"text":"querying info about '/nix/store/9klb3mimm8kcbiqh1qr4ajx5mny3779a-recdemo-1.0' on 'https://cache.nixos.org'","type":109}
+{"action":"start","fields":["https://cache.nixos.org/9klb3mimm8kcbiqh1qr4ajx5mny3779a.narinfo"],"id":107374182405,"level":4,"parent":107374182404,"text":"downloading 'https://cache.nixos.org/9klb3mimm8kcbiqh1qr4ajx5mny3779a.narinfo'","type":101}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[3,3,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[3,3,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[3,3,0,0],"id":107374182405,"type":105}
+{"action":"result","fields":[3,3,0,0],"id":107374182405,"type":105}
+{"action":"stop","id":107374182404}
+{"action":"stop","id":107374182405}
+{"action":"stop","id":107374182402}
+{"action":"msg","level":3,"msg":"this derivation will be built:"}
+{"action":"msg","level":3,"msg":"  /nix/store/r52y95rrxm3nw6vb7z6vjppk1wg7j5wz-recdemo-1.0.drv"}
+{"action":"start","id":107374182406,"level":0,"parent":0,"text":"","type":102}
+{"action":"start","id":107374182407,"level":0,"parent":0,"text":"","type":104}
+{"action":"start","id":107374182408,"level":0,"parent":0,"text":"","type":103}
+{"action":"result","fields":[0,0,0,0],"id":107374182407,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182408,"type":105}
+{"action":"result","fields":[101,0],"id":107374182406,"type":106}
+{"action":"result","fields":[100,0],"id":107374182406,"type":106}
+{"action":"start","id":107374182409,"level":6,"parent":0,"text":"querying info about missing paths","type":0}
+{"action":"stop","id":107374182409}
+{"action":"result","fields":[0,1,0,0],"id":107374182407,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182408,"type":105}
+{"action":"result","fields":[101,0],"id":107374182406,"type":106}
+{"action":"result","fields":[100,0],"id":107374182406,"type":106}
+{"action":"start","fields":["/nix/store/r52y95rrxm3nw6vb7z6vjppk1wg7j5wz-recdemo-1.0.drv","",1,1],"id":107374182410,"level":3,"parent":0,"text":"building '/nix/store/r52y95rrxm3nw6vb7z6vjppk1wg7j5wz-recdemo-1.0.drv'","type":105}
+{"action":"result","fields":[0,1,1,0],"id":107374182407,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182408,"type":105}
+{"action":"result","fields":[101,0],"id":107374182406,"type":106}
+{"action":"result","fields":[100,0],"id":107374182406,"type":106}
+{"action":"result","fields":["building"],"id":107374182410,"type":101}
+{"action":"result","fields":[1,2,0,0],"id":107374182407,"type":105}
+{"action":"result","fields":[0,0,0,0],"id":107374182408,"type":105}
+{"action":"result","fields":[101,0],"id":107374182406,"type":106}
+{"action":"result","fields":[100,0],"id":107374182406,"type":106}
+{"action":"stop","id":107374182410}
+{"action":"stop","id":107374182408}
+{"action":"stop","id":107374182407}
+{"action":"stop","id":107374182406}
+{"action":"msg","level":1,"msg":"\u001b[35;1mwarning:\u001b[0m not including \"/nix/store/9klb3mimm8kcbiqh1qr4ajx5mny3779a-recdemo-1.0\" in the user environment because it's not a directory"}

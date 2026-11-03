@@ -1,0 +1,4 @@
+{"elements":[
+ {"active":true,"attrPath":"legacyPackages.x86_64-linux.hello","originalUrl":"flake:nixpkgs","outputs":["out"],"priority":5,"storePaths":["/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-hello-2.12.1"],"url":"github:NixOS/nixpkgs/0000000000000000000000000000000000000000"},
+ {"active":true,"priority":5,"storePaths":["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-some-env"]}
+],"version":2}
