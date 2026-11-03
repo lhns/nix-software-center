@@ -50,7 +50,7 @@ from `nix profile list --json` after each operation, and progress comes from `js
    `LoadError`.
 
 Cost, measured in the fork's CI (`pkgdb` job, nixpkgs `3ec6363`): about 140,000 packages per
-system, built in 75–85 s per system per nixpkgs bump. The index is 227 MB raw, 12.3 MB with
+system, built in 75–85 s per system per nixpkgs bump. `packages.nix-software-center-full` is the package as the desktops ship it; CI starts it on headless weston with that index on both arches. The index is 227 MB raw, 12.3 MB with
 `zstd -19` (what an image layer costs to pull) and 18.4 MB with `gzip -9`. `platforms` takes about
 half of the raw size and `license` a tenth. Storing only "available on this system" instead of the
 platform list would halve the raw size; that is a separate decision, because the details page
