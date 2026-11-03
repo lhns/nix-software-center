@@ -46,6 +46,8 @@ in
       maintainers = [ { name = "Jane"; github = "jane"; } ];
     };
   };
+  other-arch = mk { name = "other-arch"; meta.platforms = [ "riscv64-linux" ]; };
+  bad-platform = mk { name = "bad-platform"; meta.badPlatforms = [ system ]; };
   unfree-thing = mk { name = "unfree-thing"; meta.unfree = true; };
   broken-thing = mk { name = "broken-thing"; meta.broken = true; };
   list-homepage = mk {

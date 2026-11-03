@@ -29,12 +29,16 @@ runCommand "nixpkgs-pkgdb"
       --arg config 'import ${path}/pkgs/top-level/packages-config.nix // { allowUnfree = true; allowBroken = true; allowInsecure = true; }' \
       --argstr system ${system} > raw.json
 
-    # One flat object per free package. Text columns are never null, the app decodes them as String.
-    jq -c --arg prefix '${path}/' '
+    # One flat object per free package available on this system. Text columns are never null, the
+    # app decodes them as String. `platforms` is stored empty (half the raw size); the app then
+    # hides the details page's platform list.
+    jq -c --arg system ${system} --arg prefix '${path}/' '
       def str: if . == null then "" elif type == "string" then . else tojson end;
       def js:  if . == null then "" else tojson end;
       to_entries[]
       | select((.value.meta.unfree // false) != true)
+      | select(([.value.meta.platforms // empty] | flatten) as $pl | ($pl | length) == 0 or ($pl | any(type != "string")) or ($pl | index($system)) != null)
+      | select(([.value.meta.badPlatforms // empty] | flatten | index($system)) == null)
       | .key as $attr | .value as $p | ($p.meta // {}) as $m
       | {
           attribute: $attr,
@@ -45,7 +49,7 @@ runCommand "nixpkgs-pkgdb"
           longdescription: ($m.longDescription | str),
           homepage: ($m.homepage | if type == "array" then (.[0] | str) else str end),
           license: ($m.license | js),
-          platforms: ($m.platforms | js),
+          platforms: "",
           maintainers: ($m.maintainers | js),
           position: ($m.position | str | ltrimstr($prefix) | sub(":[0-9]+$"; "")),
           broken: (if $m.broken == true then 1 else 0 end),
