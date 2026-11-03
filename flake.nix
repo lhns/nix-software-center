@@ -52,7 +52,7 @@
             polkit
             sqlite
             wrapGAppsHook4
-            self.packages.${system}.nixos-appstream-data
+            self.packages.${system}.appstream-data
           ];
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
