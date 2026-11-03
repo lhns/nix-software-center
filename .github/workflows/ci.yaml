@@ -62,5 +62,7 @@ jobs:
               echo "- zstd -19: $(zstd -19 -c "$db" | wc -c) bytes"
               echo "- gzip -9: $(gzip -9 -c "$db" | wc -c) bytes"
               echo "- build wall time: $BUILD_SECONDS s"
+              echo "- column bytes (description, longdescription, license, platforms, maintainers):"
+              sqlite3 "$db" "select sum(length(description)), sum(length(longdescription)), sum(length(license)), sum(length(platforms)), sum(length(maintainers)) from meta"
             } | tee -a "$GITHUB_STEP_SUMMARY"
           '

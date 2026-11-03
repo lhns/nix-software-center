@@ -35,4 +35,4 @@ runCommand "nixos-appstream-data"
       mkdir -p $dir
       tar -xzf ${section}/icons-$size.tar.gz -C $dir
     done
-  '';
+  ''
