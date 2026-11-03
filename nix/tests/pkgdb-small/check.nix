@@ -41,9 +41,9 @@ runCommand "pkgdb-small-check" { nativeBuildInputs = [ sqlite ]; } ''
   eq "string homepage" "SELECT homepage FROM meta WHERE attribute = 'hello'" "https://example.org/hello"
   eq "broken" "SELECT group_concat(attribute) FROM meta WHERE broken = 1" "broken-thing"
   eq "insecure" "SELECT group_concat(attribute) FROM meta WHERE insecure = 1" "vulnerable"
-  eq "license json" "SELECT json_extract(license, '$.spdxId') FROM meta WHERE attribute = 'hello'" "MIT"
-  eq "platforms json" "SELECT json_extract(platforms, '$[1]') FROM meta WHERE attribute = 'hello'" "aarch64-linux"
-  eq "maintainers json" "SELECT json_extract(maintainers, '$[0].github') FROM meta WHERE attribute = 'hello'" "jane"
+  eq "license json" "SELECT json_extract(license, '\$.spdxId') FROM meta WHERE attribute = 'hello'" "MIT"
+  eq "platforms json" "SELECT json_extract(platforms, '\$[1]') FROM meta WHERE attribute = 'hello'" "aarch64-linux"
+  eq "maintainers json" "SELECT json_extract(maintainers, '\$[0].github') FROM meta WHERE attribute = 'hello'" "jane"
   eq "longdescription" "SELECT longdescription FROM meta WHERE attribute = 'hello'" "Says hello."
   eq "csv quoting" "SELECT description FROM meta WHERE attribute = 'awkward'" "multi
   line, \"quoted\" and 'single'"
