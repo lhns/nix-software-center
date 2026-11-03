@@ -43,7 +43,6 @@ pkgs.stdenv.mkDerivation {
     gdk-pixbuf
     glib
     gtk4
-    gtksourceview5
     libadwaita
     libxml2
     openssl
@@ -76,7 +75,6 @@ pkgs.stdenv.mkDerivation {
     install -Dm755 src/release/nsc-backend-smoke $out/libexec/nix-software-center/nsc-backend-smoke
     wrapProgram $out/bin/nix-software-center --prefix PATH : '${
       lib.makeBinPath [
-        pkgs.gnome-console
         pkgs.gtk3 # provides gtk-launch
         pkgs.sqlite
       ]

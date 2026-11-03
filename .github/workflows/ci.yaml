@@ -77,6 +77,23 @@ jobs:
             } | tee -a "$GITHUB_STEP_SUMMARY"
           '
 
+      # Startup with the real index on a headless compositor: catches load errors and panics.
+      - name: GUI startup smoke
+        run: |
+          nix build .#packages.${{ matrix.system }}.nix-software-center-full -L -o full
+          export XDG_RUNTIME_DIR=$(mktemp -d) HOME=$(mktemp -d)
+          nix shell nixpkgs#weston nixpkgs#dbus -c bash -euo pipefail -c '
+            weston --backend=headless --socket=wl-ci &
+            for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.2; done
+            set +e
+            WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session -- timeout 40 full/bin/nix-software-center > app.log 2>&1
+            rc=$?
+            set -e
+            tail -n 40 app.log
+            [ "$rc" = 124 ] || { echo "::error::app exited early ($rc)"; exit 1; }
+            ! grep -E "panicked|LoadError|Error retrieving|Error connecting" app.log || { echo "::error::load error"; exit 1; }
+          '
+
   cargo:
     runs-on: ubuntu-latest
     steps:
