@@ -1156,12 +1156,8 @@ impl Component for PkgModel {
                 self.launchable = if let Some(l) = pkgmodel.launchable {
                     Some(Launch::GtkApp(l))
                 } else if self.installeduserpkgs.contains(match self.userpkgtype { UserPkgs::Env => &self.pname, UserPkgs::Profile => &self.pkg }) {
-                    if let Ok(o) = Command::new("command").arg("-v").arg(&self.pname).output() {
-                        if o.status.success() {
-                            Some(Launch::TerminalApp(self.pname.to_string()))
-                        } else {
-                            None
-                        }
+                    if in_path(&self.pname) {
+                        Some(Launch::TerminalApp(self.pname.to_string()))
                     } else {
                         None
                     }
@@ -1443,10 +1439,8 @@ impl Component for PkgModel {
                                     UserPkgs::Profile => self.installeduserpkgs.insert(work.pkg.to_string()),
                                 };
                                 if self.launchable.is_none() {
-                                    if let Ok(o) = Command::new("command").arg("-v").arg(&self.pname).output() {
-                                        if o.status.success() {
-                                            self.set_launchable(Some(Launch::TerminalApp(self.pname.to_string())))
-                                        }
+                                    if in_path(&self.pname) {
+                                        self.set_launchable(Some(Launch::TerminalApp(self.pname.to_string())))
                                     }
                                 }
                             }
@@ -1463,10 +1457,8 @@ impl Component for PkgModel {
                             PkgAction::Install => {
                                 self.installedsystempkgs.insert(work.pkg.clone());
                                 if self.launchable.is_none() {
-                                    if let Ok(o) = Command::new("command").arg("-v").arg(&self.pname).output() {
-                                        if o.status.success() {
-                                            self.set_launchable(Some(Launch::TerminalApp(self.pname.to_string())))
-                                        }
+                                    if in_path(&self.pname) {
+                                        self.set_launchable(Some(Launch::TerminalApp(self.pname.to_string())))
                                     }
                                 }
                             }
@@ -1546,7 +1538,7 @@ impl Component for PkgModel {
                             let _ = Command::new("gtk-launch").arg(x).spawn();
                         }
                         Launch::TerminalApp(x) => {
-                            let _ = Command::new("kgx").arg("-e").arg(x).spawn();
+                            launchterm(x);
                         }
                     }
                 }
@@ -1640,8 +1632,43 @@ impl Component for PkgModel {
     }
 }
 
+/// Executable file called `name` in a `PATH` directory (`command -v` is a shell builtin).
+fn in_path(name: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    env::var_os("PATH").map_or(false, |path| {
+        env::split_paths(&path).any(|dir| {
+            fs::metadata(dir.join(name)).map_or(false, |m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    })
+}
+
+/// Runs `cmd` with `sh -c` in a terminal: `$TERMINAL`, `xdg-terminal-exec`, then the first known one.
 fn launchterm(cmd: &str) {
-    let _ = Command::new("kgx").arg("-e").arg(&cmd).spawn();
+    let term = env::var("TERMINAL").ok().filter(|t| !t.is_empty());
+    let (prog, args): (String, Vec<&str>) = if let Some(t) = term {
+        (t, vec!["-e"])
+    } else if in_path("xdg-terminal-exec") {
+        ("xdg-terminal-exec".into(), vec![])
+    } else if let Some((p, a)) = [
+        ("konsole", vec!["-e"]),
+        ("gnome-console", vec!["-e"]),
+        ("kgx", vec!["-e"]),
+        ("gnome-terminal", vec!["--"]),
+        ("xfce4-terminal", vec!["-x"]),
+        ("alacritty", vec!["-e"]),
+        ("xterm", vec!["-e"]),
+    ]
+    .into_iter()
+    .find(|(p, _)| in_path(p))
+    {
+        (p.into(), a)
+    } else {
+        warn!("No terminal found; set $TERMINAL");
+        return;
+    };
+    if let Err(e) = Command::new(&prog).args(args).args(["sh", "-c", cmd]).spawn() {
+        warn!("Failed to start terminal {}: {}", prog, e);
+    }
 }
 
 relm4::new_action_group!(ModeActionGroup, "mode");
