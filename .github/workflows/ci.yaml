@@ -21,7 +21,7 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: cachix/install-nix-action@v31
       - name: build package
         run: nix build .#packages.${{ matrix.system }}.nix-software-center -L
