@@ -2,14 +2,9 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     utils.url = "github:numtide/flake-utils";
-    nixos-appstream-data = {
-      url = "github:korfuri/nixos-appstream-data/flake";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.flake-utils.follows = "utils";
-    };
   };
 
-  outputs = { self, nixpkgs, utils, nixos-appstream-data, ... }:
+  outputs = { self, nixpkgs, utils, ... }:
     utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -18,15 +13,19 @@
       in
       rec
       {
-        packages = let
-          nix-software-center = pkgs.callPackage ./default.nix { inherit (nixos-appstream-data.packages."${system}") nixos-appstream-data; };
-        in {
-          inherit nix-software-center;
+        packages = rec {
+          appstream-data = pkgs.callPackage ./nix/appstream.nix { };
+          # Full index for this system; not part of the default package so CI and builds stay cheap.
+          pkgdb = pkgs.callPackage ./nix/pkgdb.nix { inherit system; };
+          nix-software-center = pkgs.callPackage ./default.nix { nixos-appstream-data = appstream-data; };
           default = nix-software-center;
         };
 
-        checks = self.packages.${system};
-        hydraJobs = self.packages.${system};
+        checks = {
+          inherit (self.packages.${system}) nix-software-center;
+          pkgdb-small = pkgs.callPackage ./nix/tests/pkgdb-small/check.nix { inherit system; };
+        };
+        hydraJobs = self.checks.${system};
 
         devShell = pkgs.mkShell {
           buildInputs = with pkgs; [
@@ -53,7 +52,7 @@
             polkit
             sqlite
             wrapGAppsHook4
-            nixos-appstream-data.packages."${system}".nixos-appstream-data
+            self.packages.${system}.nixos-appstream-data
           ];
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
         };
@@ -61,7 +60,11 @@
     // {
       overlays = {
         pkgs = final: prev: {
-          nix-software-center = self.packages.${final.system}.nix-software-center;
+          nix-software-center = final.callPackage ./default.nix { };
+          # system is passed explicitly: callPackage would otherwise fill it from the deprecated pkgs.system.
+          nix-software-center-pkgdb = final.callPackage ./nix/pkgdb.nix {
+            system = final.stdenv.hostPlatform.system;
+          };
         };
         nixSoftwareCenterPkgs = final: prev: {
           nixSoftwareCenterPkgs = self.packages.${prev.system};

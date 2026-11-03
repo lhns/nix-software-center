@@ -1,21 +1,9 @@
 {
   pkgs ? import <nixpkgs> { },
   lib ? import <nixpkgs/lib>,
-  nixos-appstream-data ? (
-    import
-      (pkgs.fetchFromGitHub {
-        owner = "vlinkz";
-        repo = "nixos-appstream-data";
-        rev = "66b3399e6d81017c10265611a151d1109ff1af1b";
-        hash = "sha256-oiEZD4sMpb2djxReg99GUo0RHWAehxSyQBbiz8Z4DJk=";
-      })
-      {
-        set = "all";
-        stdenv = pkgs.stdenv;
-        lib = pkgs.lib;
-        pkgs = pkgs;
-      }
-  ),
+  nixos-appstream-data ? pkgs.callPackage ./nix/appstream.nix { },
+  # Package index (nix/pkgdb.nix); when set, the app uses it via NSC_PKGDB.
+  pkgdb ? null,
 }:
 pkgs.stdenv.mkDerivation {
   pname = "nix-software-center";
@@ -69,7 +57,9 @@ pkgs.stdenv.mkDerivation {
   '';
 
   postInstall = ''
-    wrapProgram $out/bin/nix-software-center --prefix PATH : '${
+    wrapProgram $out/bin/nix-software-center ${
+      lib.optionalString (pkgdb != null) "--set-default NSC_PKGDB ${pkgdb}/nixpkgs.db"
+    } --prefix PATH : '${
       lib.makeBinPath [
         pkgs.gnome-console
         pkgs.gtk3 # provides gtk-launch
