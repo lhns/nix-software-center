@@ -59,7 +59,7 @@ runCommand "nixpkgs-pkgdb"
 
     mkdir -p $out
     db=$out/nixpkgs.db
-    sqlite3 "$db" <<'SQL'
+    sqlite3 "$db" > /dev/null <<'SQL'
     PRAGMA journal_mode = OFF;
     PRAGMA synchronous = OFF;
     CREATE TABLE pkgs (

@@ -15,11 +15,12 @@ let
     # Fake derivation: the sandbox cannot write a real .drv, and nix-env -qa does not need one.
     {
       type = "derivation";
-      inherit name system;
+      name = "${name}-1.0";
+      inherit system;
       outputName = "out";
       outputs = [ "out" ];
-      outPath = "/nonexistent/${name}";
-      drvPath = "/nonexistent/${name}.drv";
+      outPath = "/nonexistent/${name}-1.0";
+      drvPath = "/nonexistent/${name}-1.0.drv";
       pname = name;
       version = "1.0";
       meta = {
