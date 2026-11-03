@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use log::*;
 use nsc_backend::{
     ops::{self, Nix},
-    pkgdb,
+    pkgdb::{self, Unavailable},
     profile,
     run::{Cancel, Event},
 };
@@ -149,4 +149,38 @@ pub async fn upgrade_all(op: &Op, remove_first: &[String]) -> bool {
         ops::remove_then_upgrade_all(nix, &names, &op.cancel, show).await
     }
     .await)
+}
+
+/// Installed nixpkgs entries the next upgrade cannot take, as `key -> reason`.
+pub async fn unavailable(pkgdb_path: &str) -> HashMap<String, String> {
+    match unavailable_in(pkgdb_path).await {
+        Ok(found) => found,
+        Err(e) => {
+            // Nix without `profile list --json`
+            warn!("unavailable packages: {}; reading manifest.json", e);
+            nix_data::cache::profile::unavailablepkgs()
+                .await
+                .unwrap_or_default()
+        }
+    }
+}
+
+async fn unavailable_in(pkgdb_path: &str) -> Result<HashMap<String, String>> {
+    let installed = profile::installed(&profile::list(nix().await).await?);
+    let mut attrs: Vec<String> = installed.into_iter().filter_map(|p| p.nixpkgs_attr).collect();
+    attrs.sort();
+    attrs.dedup();
+    let pool = pkgdb::connect(Path::new(pkgdb_path)).await?;
+    Ok(pkgdb::unavailable(&pool, &attrs)
+        .await
+        .into_iter()
+        .map(|(attr, why)| {
+            let why = match why {
+                Unavailable::Missing => "not in this nixpkgs",
+                Unavailable::Broken => "marked broken",
+                Unavailable::Insecure => "marked insecure",
+            };
+            (attr, why.to_string())
+        })
+        .collect())
 }
