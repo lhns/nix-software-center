@@ -170,7 +170,6 @@ pub enum AppMsg {
     OpenCategoryPage(PkgCategory),
     LoadCategory(PkgCategory),
     UpdateRecPkgs(Vec<String>),
-    SetDarkMode(bool),
     GetUnavailableItems(HashMap<String, String>, HashMap<String, String>, UpdateType),
     CheckNetwork,
 }
@@ -572,14 +571,6 @@ impl Component for AppModel {
             online,
             tracker: 0,
         };
-
-        {
-            let sender = sender.clone();
-            adw::StyleManager::default()
-                .connect_dark_notify(move |x| sender.input(AppMsg::SetDarkMode(x.is_dark())));
-        }
-
-        sender.input(AppMsg::SetDarkMode(adw::StyleManager::default().is_dark()));
 
         if welcome && nixos {
             model.welcomepage.emit(WelcomeMsg::Show);
@@ -1875,11 +1866,6 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                     }
                     AppAsyncMsg::LoadCategory(category, catrec, catall)
                 });
-            }
-            AppMsg::SetDarkMode(dark) => {
-                info!("AppMsg::SetDarkMode({})", dark);
-                let scheme = if dark { "Adwaita-dark" } else { "Adwaita" };
-                self.rebuild.emit(RebuildMsg::SetScheme(scheme.to_string()));
             }
             AppMsg::GetUnavailableItems(userpkgs, syspkgs, updatetype) => {
                 info!("AppMsg::GetUnavailableItems");
