@@ -13,6 +13,7 @@ pub mod searchpage;
 pub mod unavailabledialog;
 pub mod updatepage;
 pub mod updateworker;
+pub mod userops;
 pub mod welcome;
 pub mod window;
 pub mod windowloading;

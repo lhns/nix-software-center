@@ -127,7 +127,8 @@ pub struct AppScreenshotImage {
 }
 
 pub fn appsteamdata() ->  Result<HashMap<String, AppData>> {
-    let appdata = File::open(&format!("{}/xmls/nixos_x86_64_linux.yml.gz", APPINFO))?;
+    let appdata = File::open(format!("{}/xmls/nixos_{}_linux.yml.gz", APPINFO, std::env::consts::ARCH))
+        .or_else(|_| File::open(format!("{}/xmls/nixos_x86_64_linux.yml.gz", APPINFO)))?;
     let appreader = BufReader::new(appdata);
     let mut d = GzDecoder::new(appreader);
     let mut s = String::new();

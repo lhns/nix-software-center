@@ -68,6 +68,21 @@ async fn invalid_utf8_and_crlf_lines() {
 }
 
 #[tokio::test]
+async fn a_grandchild_holding_the_pipe_does_not_hang_the_run() {
+    let _g = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let s = script(dir.path(), "bg", "echo hi
+sleep 30 &
+exit 0");
+    let start = std::time::Instant::now();
+    let mut lines = Vec::new();
+    let st = run::run(s.as_os_str(), &[], &Cancel::new(), |e| lines.push(e)).await.unwrap();
+    assert!(st.success());
+    assert_eq!(lines, [Event::Line(Stream::Stdout, "hi".into())]);
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+}
+
+#[tokio::test]
 async fn exit_codes_map_to_bool() {
     let _g = serial();
     let dir = tempfile::tempdir().unwrap();

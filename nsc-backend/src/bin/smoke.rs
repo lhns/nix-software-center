@@ -2,6 +2,7 @@
 //! functions the UI calls. Run as the desktop user.
 //!
 //! Usage: nsc-backend-smoke <installable> [--pkgdb <file>] [--require-progress]
+//! `--pkgdb` defaults to $NSC_PKGDB.
 
 use anyhow::{bail, Context, Result};
 use nsc_backend::run::{Cancel, Event, Stream};
@@ -37,6 +38,7 @@ async fn real_main() -> Result<()> {
             _ => bail!("unexpected argument {a}"),
         }
     }
+    let pkgdb_path = pkgdb_path.or_else(|| std::env::var_os("NSC_PKGDB").map(PathBuf::from));
     let installable = installable.context("usage: nsc-backend-smoke <installable> [--pkgdb <file>] [--require-progress]")?;
 
     let nix = ops::Nix::detect().await;

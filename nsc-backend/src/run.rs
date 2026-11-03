@@ -88,6 +88,9 @@ pub async fn run_with_progress(
     run_inner(program, args, cancel, cfg!(unix), on_event).await
 }
 
+/// How long output may still arrive after the child exited.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 enum Msg {
     Line(Stream, String),
     Json(String),
@@ -164,6 +167,8 @@ async fn run_inner(
     let mut cancel_rx = cancel.0.subscribe();
     let mut interrupted = false;
     let mut status: Option<std::io::Result<ExitStatus>> = None;
+    // Set once the child exited: a grandchild may keep the pipes open.
+    let mut drain_deadline: Option<tokio::time::Instant> = None;
 
     loop {
         tokio::select! {
@@ -194,7 +199,9 @@ async fn run_inner(
                     }
                 }
                 tx = None;
+                drain_deadline = Some(tokio::time::Instant::now() + DRAIN_TIMEOUT);
             },
+            _ = async { tokio::time::sleep_until(drain_deadline.unwrap()).await }, if drain_deadline.is_some() => break,
             _ = Cancel::cancelled(&mut cancel_rx), if !interrupted && status.is_none() => {
                 interrupted = true;
                 interrupt(pid);
