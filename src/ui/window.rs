@@ -805,6 +805,9 @@ impl Component for AppModel {
                 self.pkgpage.emit(PkgMsg::UpdateConfig(self.config.clone()));
                 self.updatepage
                     .emit(UpdatePageMsg::UpdateConfig(self.config.clone()));
+                self.updatepage.emit(UpdatePageMsg::SetPkgDb(
+                    self.nixpkgsdb.clone().unwrap_or_else(|| self.pkgdb.clone()),
+                ));
                 sender.input(AppMsg::UpdateRecPkgs(recommendedapps));
                 let mut cat_guard = self.categories.guard();
                 cat_guard.clear();

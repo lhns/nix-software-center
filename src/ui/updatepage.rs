@@ -1,6 +1,6 @@
 use crate::{APPINFO, ui::unavailabledialog::UnavailableDialogModel, parse::util};
 
-use super::{pkgpage::InstallType, window::*, updateworker::{UpdateAsyncHandler, UpdateAsyncHandlerMsg, UpdateAsyncHandlerInit}, rebuild::RebuildMsg, unavailabledialog::UnavailableDialogMsg};
+use super::{pkgpage::InstallType, userops, window::*, updateworker::{UpdateAsyncHandler, UpdateAsyncHandlerMsg, UpdateAsyncHandlerInit}, rebuild::RebuildMsg, unavailabledialog::UnavailableDialogMsg};
 use adw::prelude::*;
 use nix_data::config::configfile::NixDataConfig;
 use relm4::{factory::*, gtk::pango, *};
@@ -26,11 +26,14 @@ pub struct UpdatePageModel {
     #[tracker::no_eq]
     unavailabledialog: Controller<UnavailableDialogModel>,
     online: bool,
+    /// Package database that installs resolve against.
+    pkgdb: String,
 }
 
 #[derive(Debug)]
 pub enum UpdatePageMsg {
     UpdateConfig(NixDataConfig),
+    SetPkgDb(String),
     UpdatePkgTypes(SystemPkgs, UserPkgs),
     Update(Vec<UpdateItem>, Vec<UpdateItem>),
     OpenRow(usize, InstallType),
@@ -240,6 +243,7 @@ impl SimpleComponent for UpdatePageModel {
             usertype: initparams.usertype,
             unavailabledialog,
             online: initparams.online,
+            pkgdb: String::new(),
             tracker: 0,
         };
 
@@ -259,6 +263,9 @@ impl SimpleComponent for UpdatePageModel {
             UpdatePageMsg::UpdateConfig(config) => {
                 self.config = config;
                 self.updateworker.emit(UpdateAsyncHandlerMsg::UpdateConfig(self.config.clone()));
+            }
+            UpdatePageMsg::SetPkgDb(pkgdb) => {
+                self.pkgdb = pkgdb;
             }
             UpdatePageMsg::UpdatePkgTypes(systype, usertype) => {
                 self.systype = systype;
@@ -348,8 +355,9 @@ impl SimpleComponent for UpdatePageModel {
                 if self.usertype == UserPkgs::Profile {
                     let workersender = self.updateworker.sender().clone();
                     let output = sender.output_sender().clone();
+                    let pkgdb = self.pkgdb.clone();
                     relm4::spawn(async move {
-                        let uninstalluser = nix_data::cache::profile::unavailablepkgs().await.unwrap_or_default();
+                        let uninstalluser = userops::unavailable(&pkgdb).await;
                         if uninstalluser.is_empty() {
                             workersender.send(UpdateAsyncHandlerMsg::UpdateUserPkgs);
                         } else {
@@ -379,6 +387,7 @@ impl SimpleComponent for UpdatePageModel {
                 let systemconfig = self.config.systemconfig.clone();
                 let workersender = self.updateworker.sender().clone();
                 let output = sender.output_sender().clone();
+                let pkgdb = self.pkgdb.clone();
                 REBUILD_BROKER.send(RebuildMsg::Show);
                 relm4::spawn(async move {
                     let uninstallsys = match systype {
@@ -391,7 +400,7 @@ impl SimpleComponent for UpdatePageModel {
                         _ => HashMap::new(),
                     };
                     let uninstalluser = if usertype == UserPkgs::Profile {
-                        nix_data::cache::profile::unavailablepkgs().await.unwrap_or_default()
+                        userops::unavailable(&pkgdb).await
                     } else {
                         HashMap::new()
                     };

@@ -5,7 +5,8 @@ use anyhow::{bail, Result};
 use log::*;
 use nsc_backend::{
     ops::{self, Nix},
-    pkgdb, profile,
+    pkgdb,
+    profile,
     run::{Cancel, Event},
 };
 use std::{
