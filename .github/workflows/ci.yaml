@@ -25,6 +25,13 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: build package
         run: nix build .#packages.${{ matrix.system }}.nix-software-center -L
+      # Real `nix profile` on the runner, in a fresh HOME so the profile is new.
+      - name: backend smoke test
+        run: |
+          smoke=$(readlink -f result)/libexec/nix-software-center/nsc-backend-smoke
+          HOME=$(mktemp -d) "$smoke" nixpkgs#hello --require-progress
+      - name: devShell evaluates
+        run: nix eval .#devShell.${{ matrix.system }}.drvPath
       - name: build appstream data
         run: |
           nix build .#packages.${{ matrix.system }}.appstream-data -L -o appstream
