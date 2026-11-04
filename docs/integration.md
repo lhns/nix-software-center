@@ -111,7 +111,7 @@ Preferences (Sources). Two are built in: "nixpkgs" and "nixpkgs unfree", both re
 | option | env (wrapper `--set-default`) | meaning |
 | --- | --- | --- |
 | `systemPackages ? true` | `NSC_SYSTEM_PACKAGES=0` | read once at startup. `false` forces no system packages, no welcome screen, no configuration/flake preferences and refuses system jobs; Preferences then holds only Sources and the menu entry reads "Sources" |
-| `unfreeFlake ? null` | `NSC_UNFREE_FLAKE` | flake that installs unfree apps, as `<flake>#<attr>`. Default `github:lhns/nix-software-center?dir=nix/unfree` (follows the registry's `nixpkgs`, `allowUnfree`, no `--impure`). A bare registry name such as `nixpkgs-unfree` is recognised as `flake:nixpkgs-unfree` in `nix profile list` |
+| `unfreeFlake ? null` | `NSC_UNFREE_FLAKE` | flake that installs unfree apps, as `<flake>#<attr>`. Default `github:lhns/nix-software-center?dir=nix/unfree` (its own locked `nixpkgs`, `allowUnfree`, no `--impure`; a deployer that wants the system's pin sets `NSC_UNFREE_FLAKE`, e.g. a registry flake). A bare registry name such as `nixpkgs-unfree` is recognised as `flake:nixpkgs-unfree` in `nix profile list` |
 | `unfreeListedDefault ? null` | `NSC_UNFREE_LISTED_DEFAULT` (`0`/`1`) | whether "nixpkgs unfree" is listed until the user toggles it; default on. Hiding only hides: installed apps keep their label and updates |
 
 User sources and explicit toggles live in `~/.config/nix-software-center/sources.json`; an untouched

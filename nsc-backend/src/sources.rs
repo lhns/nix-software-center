@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub const NIXPKGS_ID: &str = "nixpkgs";
 pub const UNFREE_ID: &str = "nixpkgs-unfree";
-/// Default flake of the unfree built-in: own wrapper, follows the registry's nixpkgs.
+/// Default flake of the unfree built-in: own wrapper with a locked nixpkgs.
 pub const DEFAULT_UNFREE_FLAKE: &str = "github:lhns/nix-software-center?dir=nix/unfree";
 const MAX_REF: usize = 512;
 

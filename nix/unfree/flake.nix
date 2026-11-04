@@ -1,5 +1,5 @@
 # Installs unfree apps from the registry's nixpkgs, with allowUnfree set: no --impure needed.
-# Deliberately no committed lock, so it follows the registry pin of the machine it runs on.
+# Locked: an unlocked flake makes `nix profile add` fail (it cannot write the lock). Bump with `nix flake update`.
 {
   inputs.nixpkgs.url = "nixpkgs";
 
