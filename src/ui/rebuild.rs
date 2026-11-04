@@ -195,9 +195,9 @@ impl SimpleComponent for RebuildModel {
             Some(f) => progressbar.set_fraction(f),
             None => progressbar.pulse(),
         }
-        if let Some(end) = model.buffer.mark("end") {
-            outview.scroll_to_mark(&end, 0.0, false, 0.0, 0.0);
-        }
+        // Follow new lines vertically only; scroll_to_mark would also move the horizontal position.
+        let vadj = scrollwindow.vadjustment();
+        vadj.set_value(vadj.upper() - vadj.page_size());
         if model.status != RebuildStatus::Building {
             scrollwindow.hadjustment().set_value(0.0);
         }
