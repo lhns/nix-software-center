@@ -70,8 +70,8 @@ pub fn validate_flake_ref(s: &str) -> Result<(), String> {
     if SCHEMES.iter().any(|p| s.starts_with(p) && s.len() > p.len()) {
         return Ok(());
     }
-    // A bare registry name.
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+    // A bare registry name; a leading '.' would be a relative path.
+    if s.starts_with(|c: char| c.is_ascii_alphanumeric()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
         return Ok(());
     }
     Err("not a github:, gitlab:, sourcehut:, git+https:, https: or flake: reference or registry name".into())

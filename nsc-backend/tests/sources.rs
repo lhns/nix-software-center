@@ -22,7 +22,7 @@ fn flake_ref_validation() {
         "", "-github:o/r", "--flag", "github:o/r x", "github:o/r\n", "github:o/r;ls", "github:o/r`id`",
         "github:o/$(id)", "github:o/r'", "github:o/r\"", "github:o/r|x", "github:o/r&x", "github:o/r#attr",
         "github:o/r\\", "path:/etc", "git+ssh://h/r", "file:///x", "http://x/y", "ftp://x", "a b", "github:",
-        "has/slash", &long,
+        "has/slash", ".", "..", ".hidden", &long,
     ];
     for r in bad {
         assert!(validate_flake_ref(r).is_err(), "{r:?} should be refused");

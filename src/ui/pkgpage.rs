@@ -796,10 +796,10 @@ impl Component for PkgModel {
                                             set_margin_all: 15,
                                             gtk::Image {
                                                 #[watch]
-                                                set_css_classes: &[ if model.licenses.iter().any(|x| x.free == Some(false)) { "error" } else if model.licenses.iter().all(|x| x.free == Some(true)) { "success" } else { "warning" } ],
+                                                set_css_classes: &[ if model.licenses.iter().any(|x| x.free == Some(false)) { "error" } else if (!model.licenses.is_empty() && model.licenses.iter().all(|x| x.free == Some(true))) { "success" } else { "warning" } ],
                                                 set_halign: gtk::Align::Center,
                                                 #[watch]
-                                                set_icon_name : if model.licenses.iter().any(|x| x.free == Some(false)) { Some("dialog-warning-symbolic") } else if model.licenses.iter().all(|x| x.free == Some(true)) { Some("emblem-default-symbolic") } else { Some("dialog-question-symbolic") },
+                                                set_icon_name : if model.licenses.iter().any(|x| x.free == Some(false)) { Some("dialog-warning-symbolic") } else if (!model.licenses.is_empty() && model.licenses.iter().all(|x| x.free == Some(true))) { Some("emblem-default-symbolic") } else { Some("dialog-question-symbolic") },
                                                 set_pixel_size: 24,
                                             },
                                             gtk::Box {
