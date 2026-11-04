@@ -326,6 +326,7 @@ impl Component for PkgModel {
                                                     #[name(userinstallstack)]
                                                     if userops::state_label(&model.pkg, &InstallType::User, &model.userpkgtype).is_some() {
                                                         gtk::Box {
+                                                            set_spacing: 10,
                                                             gtk::Spinner {
                                                                 set_halign: gtk::Align::End,
                                                                 #[watch]
@@ -447,6 +448,7 @@ impl Component for PkgModel {
                                                     #[name(systeminstallstack)]
                                                     if userops::state_label(&model.pkg, &InstallType::System, &model.userpkgtype).is_some() {
                                                         gtk::Box {
+                                                            set_spacing: 10,
                                                             gtk::Spinner {
                                                                 set_halign: gtk::Align::End,
                                                                 #[watch]
