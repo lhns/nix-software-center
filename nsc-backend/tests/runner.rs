@@ -231,7 +231,7 @@ async fn current_nix_uses_names_and_all() {
     assert!(ops::upgrade(&nix, &[], &c, |_| {}).await.unwrap());
     assert_eq!(
         read(dir.path(), "argv.log"),
-        "profile remove hello hello-1\nprofile upgrade --all --impure\nprofile upgrade hello --impure\n"
+        "profile remove hello hello-1\nprofile upgrade --all\nprofile upgrade hello\n"
     );
     assert_eq!(read(dir.path(), "cfg.log"), "socket\nsocket\nsocket\n");
 }
@@ -248,7 +248,7 @@ async fn old_nix_uses_attr_paths_regex_and_no_socket() {
     assert!(ops::remove(&nix, &["7".into()], &c, |_| {}).await.is_err());
     assert_eq!(
         read(dir.path(), "argv.log"),
-        "profile list --json\nprofile remove legacyPackages.x86_64-linux.hello\nprofile upgrade .* --impure\nprofile list --json\n"
+        "profile list --json\nprofile remove legacyPackages.x86_64-linux.hello\nprofile upgrade .*\nprofile list --json\n"
     );
     assert!(read(dir.path(), "cfg.log").lines().all(|l| l == "nosocket"));
 }
@@ -303,5 +303,5 @@ async fn add_many_is_one_command_and_empty_runs_nothing() {
     let pkgs = ["nixpkgs#a".to_string(), "nixpkgs#b".to_string()];
     assert!(ops::add_many(&nix, &pkgs, &c, |_| {}).await.unwrap());
     assert!(ops::add_many(&nix, &[], &c, |_| {}).await.unwrap());
-    assert_eq!(read(dir.path(), "argv.log"), "profile add nixpkgs#a nixpkgs#b --impure\n");
+    assert_eq!(read(dir.path(), "argv.log"), "profile add nixpkgs#a nixpkgs#b\n");
 }

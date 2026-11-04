@@ -37,7 +37,7 @@ echo "installed $3"
     let log = std::fs::read_to_string(dir.path().join("argv.log")).unwrap();
     assert_eq!(
         log,
-        "profile add nixpkgs#hello --impure\nprofile install nixpkgs#hello --impure\nprofile install nixpkgs#jq --impure\nprofile install nixpkgs#a nixpkgs#b --impure\n"
+        "profile add nixpkgs#hello\nprofile install nixpkgs#hello\nprofile install nixpkgs#jq\nprofile install nixpkgs#a nixpkgs#b\n"
     );
 
     // Any other failure is reported as is, with a single attempt.
