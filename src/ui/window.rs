@@ -6,7 +6,7 @@ use crate::{
         util,
     },
     ui::{
-        installedpage::InstalledItem, pkgpage::PkgPageInit, rebuild::RebuildMsg,
+        installedpage::InstalledItem, pkgpage::PkgPageInit,
         unavailabledialog::UnavailableDialogMsg, updatepage::UNAVAILABLE_BROKER,
         welcome::WelcomeMsg,
     },
@@ -40,8 +40,8 @@ use super::{
     pkgpage::{self, InstallType, PkgInitModel, PkgModel, PkgMsg, WorkPkg},
     pkgtile::PkgTile,
     preferencespage::{PreferencesPageModel, PreferencesPageMsg},
-    queuepanel::{QueuePanelModel, QueuePanelMsg},
-    rebuild::RebuildModel,
+    activitylog::{ActivityLogModel, LogMsg},
+    activitypage::{ActivityMsg, ActivityPageModel},
     searchpage::{SearchItem, SearchPageModel, SearchPageMsg},
     unavailabledialog::UnavailableItemModel,
     userops,
@@ -50,9 +50,9 @@ use super::{
     windowloading::{LoadErrorModel, LoadErrorMsg, WindowAsyncHandler, WindowAsyncHandlerMsg},
 };
 
-pub static REBUILD_BROKER: MessageBroker<RebuildMsg> = MessageBroker::new();
 pub static PKGPAGE_BROKER: MessageBroker<PkgMsg> = MessageBroker::new();
-pub static QUEUE_PANEL_BROKER: MessageBroker<QueuePanelMsg> = MessageBroker::new();
+pub static ACTIVITY_BROKER: MessageBroker<ActivityMsg> = MessageBroker::new();
+pub static ACTIVITYLOG_BROKER: MessageBroker<LogMsg> = MessageBroker::new();
 
 #[derive(PartialEq)]
 enum Page {
@@ -133,9 +133,11 @@ pub struct AppModel {
     viewstack: adw::ViewStack,
     installedpagebusy: Vec<(String, InstallType)>,
     #[tracker::no_eq]
-    rebuild: Controller<RebuildModel>,
+    activitypage: Controller<ActivityPageModel>,
     #[tracker::no_eq]
-    queuepanel: Controller<QueuePanelModel>,
+    activitylog: Controller<ActivityLogModel>,
+    #[tracker::no_eq]
+    toasts: adw::ToastOverlay,
     #[tracker::no_eq]
     welcomepage: Controller<WelcomeModel>,
     online: bool,
@@ -178,6 +180,15 @@ pub enum AppMsg {
     UpdateRecPkgs(Vec<String>),
     GetUnavailableItems(HashMap<String, String>, HashMap<String, String>, UpdateType),
     CheckNetwork,
+    /// Work was queued, finished or changed: refresh the Activity badge.
+    ActivityChanged,
+    ShowActivity,
+    ShowTab(String),
+    /// An update was queued: toast with a link to the Activity tab.
+    UpdateQueued(String),
+    /// The window was closed while work is queued or running.
+    ConfirmClose,
+    StopAndQuit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,6 +384,7 @@ impl Component for AppModel {
                                 add: model.installedpage.widget(),
                                 add: model.searchpage.widget(),
                                 add: model.updatepage.widget(),
+                                add: model.activitypage.widget(),
                             },
                             adw::ViewSwitcherBar {
                                 set_stack: Some(viewstack),
@@ -384,7 +396,6 @@ impl Component for AppModel {
                     },
                     append: model.pkgpage.widget()
                 },
-                append: model.queuepanel.widget(),
                 }
             }
         }
@@ -530,11 +541,11 @@ impl Component for AppModel {
                 online,
             })
             .forward(sender.input_sender(), identity);
-        let rebuild = RebuildModel::builder()
-            .launch_with_broker(root.clone().upcast(), &REBUILD_BROKER)
+        let activitypage = ActivityPageModel::builder()
+            .launch_with_broker((), &ACTIVITY_BROKER)
             .forward(sender.input_sender(), identity);
-        let queuepanel = QueuePanelModel::builder()
-            .launch_with_broker((), &QUEUE_PANEL_BROKER)
+        let activitylog = ActivityLogModel::builder()
+            .launch_with_broker((), &ACTIVITYLOG_BROKER)
             .detach();
         let viewstack = adw::ViewStack::new();
         let welcomepage = WelcomeModel::builder()
@@ -578,8 +589,9 @@ impl Component for AppModel {
             updatepage,
             viewstack,
             installedpagebusy: vec![],
-            rebuild,
-            queuepanel,
+            activitypage,
+            activitylog,
+            toasts: adw::ToastOverlay::new(),
             welcomepage,
             aboutpage,
             preferencespage,
@@ -644,6 +656,33 @@ impl Component for AppModel {
         installedvs.set_icon_name(Some("nsc-installed-symbolic"));
         updatesvs.set_icon_name(Some("nsc-update-symbolic"));
 
+        let activityvs = widgets.viewstack.page(model.activitypage.widget());
+        activityvs.set_title(Some("Activity"));
+        activityvs.set_name(Some("activity"));
+        activityvs.set_icon_name(Some("view-list-symbolic"));
+
+        // The log modal covers the whole window, package pages included, so it
+        // wraps the main stack rather than sitting in a tab.
+        let stack = widgets.main_stack.clone();
+        widgets.main_window.set_content(None::<&gtk::Widget>);
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&stack));
+        overlay.add_overlay(model.activitylog.widget());
+        model.toasts.set_child(Some(&overlay));
+        widgets.main_window.set_content(Some(&model.toasts));
+        super::activitylog::hide_on_escape(&widgets.main_window);
+        widgets.main_window.connect_close_request({
+            let sender = sender.clone();
+            move |_| {
+                if userops::is_busy() {
+                    sender.input(AppMsg::ConfirmClose);
+                    gtk::Inhibit(true)
+                } else {
+                    gtk::Inhibit(false)
+                }
+            }
+        });
+
         ComponentParts { model, widgets }
     }
 
@@ -652,7 +691,7 @@ impl Component for AppModel {
         &mut self,
         msg: Self::Input,
         sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        root: &Self::Root,
     ) {
         self.reset();
         match msg {
@@ -837,6 +876,9 @@ impl Component for AppModel {
                 }
                 cat_guard.drop();
                 self.busy = false;
+                if let Ok(dir) = std::env::var("NSC_UI_TEST") {
+                    super::uitest::start(dir, root.clone().upcast(), sender.input_sender().clone());
+                }
             }
             AppMsg::UpdateRecPkgs(pkgs) => {
                 info!("AppMsg::UpdateRecPkgs");
@@ -1636,6 +1678,64 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                 if name == "updates" && self.online {
                     sender.input(AppMsg::CheckNetwork);
                 }
+                if name == "activity" {
+                    sender.input(AppMsg::ActivityChanged);
+                }
+            }
+            AppMsg::ActivityChanged => {
+                let visible = self.viewstack.visible_child_name().map_or(false, |n| n == "activity");
+                if visible {
+                    userops::mark_failures_seen();
+                }
+                let (active, unseen) = userops::counts();
+                let page = self.viewstack.page(self.activitypage.widget());
+                page.set_badge_number(active as u32);
+                page.set_needs_attention(unseen > 0);
+            }
+            AppMsg::ShowTab(name) => {
+                self.viewstack.set_visible_child_name(&name);
+            }
+            AppMsg::ShowActivity => {
+                self.viewstack.set_visible_child_name("activity");
+            }
+            AppMsg::UpdateQueued(title) => {
+                // Toast titles are markup.
+                let toast = adw::Toast::new(&gtk::glib::markup_escape_text(&title));
+                toast.set_button_label(Some("View"));
+                let input = sender.input_sender().clone();
+                toast.connect_button_clicked(move |_| input.emit(AppMsg::ShowActivity));
+                self.toasts.add_toast(toast);
+            }
+            AppMsg::ConfirmClose => {
+                let dialog = adw::MessageDialog::new(
+                    relm4::main_application().active_window().as_ref(),
+                    Some("Quit while work is running?"),
+                    Some("Installs, removals or updates are still running or waiting. Stopping asks Nix to cancel them, and Nix may keep running for a moment."),
+                );
+                dialog.add_response("keep", "Keep Working");
+                dialog.add_response("stop", "Stop and Quit");
+                dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("keep"));
+                dialog.set_close_response("keep");
+                let input = sender.input_sender().clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response == "stop" {
+                        input.emit(AppMsg::StopAndQuit);
+                    }
+                });
+                dialog.present();
+            }
+            AppMsg::StopAndQuit => {
+                userops::stop_all();
+                let input = sender.input_sender().clone();
+                let started = std::time::Instant::now();
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                    if !userops::is_busy() || started.elapsed() > std::time::Duration::from_secs(5) {
+                        input.emit(AppMsg::Close);
+                        return gtk::glib::Continue(false);
+                    }
+                    gtk::glib::Continue(true)
+                });
             }
             AppMsg::SetVsBar(vsbar) => {
                 self.set_showvsbar(vsbar);
@@ -1772,7 +1872,7 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                     InstallType::System => work.pkg.to_string(),
                 };
                 self.installedpagebusy
-                    .retain(|(x, y)| x != &p && y != &work.pkgtype);
+                    .retain(|(x, y)| x != &p || y != &work.pkgtype);
                 self.installedpage.emit(InstalledPageMsg::UnsetBusy(work));
             }
             AppMsg::OpenCategoryPage(category) => {

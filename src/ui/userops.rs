@@ -1,28 +1,30 @@
-//! Profile-mode user operations on top of `nsc-backend`. Upgrades show in the
-//! rebuild dialog; installs and removals go through the app-wide queue and its panel.
+//! The app-wide work queue on top of `nsc-backend`: profile installs and
+//! removals run as batches here, everything else as exclusive jobs (`jobs.rs`).
+//! The Activity tab and its log modal show what this module holds.
 
 use super::{
-    pkgpage::{PkgAction, PkgMsg, WorkPkg},
-    queuepanel::QueuePanelMsg,
-    rebuild::RebuildMsg,
-    window::{PKGPAGE_BROKER, QUEUE_PANEL_BROKER, REBUILD_BROKER},
+    activitylog::LogMsg,
+    activitypage::ActivityMsg,
+    jobs::{self, Job, JobKind, UpdateJob},
+    pkgpage::{InstallType, PkgAction, PkgMsg, WorkPkg},
+    updatepage::UpdateType,
+    window::{SystemPkgs, UserPkgs, ACTIVITYLOG_BROKER, ACTIVITY_BROKER, PKGPAGE_BROKER},
 };
 use anyhow::{bail, Result};
 use log::*;
+use nix_data::config::configfile::NixDataConfig;
 use nsc_backend::{
     ops::{self, Nix},
     pkgdb::{self, Unavailable},
     profile,
-    queue::{self, Action, BatchResult, Item, Queue, Status},
+    progress::Summary,
+    queue::{self, Action, BatchResult, Entry, Item, Queue, Status},
     run::{Cancel, Event},
 };
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex, OnceLock,
-    },
+    sync::{Mutex, OnceLock},
 };
 
 static NIX: OnceLock<Nix> = OnceLock::new();
@@ -35,6 +37,7 @@ async fn nix() -> &'static Nix {
     let detected = Nix::detect().await;
     NIX.get_or_init(|| detected)
 }
+
 
 /// Installed profile entries as `key -> version`, keys as upstream names them.
 /// Version: package database for nixpkgs entries, else the store path's.
@@ -71,64 +74,22 @@ async fn element_names(keys: &[String]) -> Result<Vec<String>> {
     Ok(names)
 }
 
-static NEXT_OP: AtomicU64 = AtomicU64::new(1);
-static CURRENT: Mutex<Option<(u64, Cancel)>> = Mutex::new(None);
 
-/// A running profile operation the dialog's Cancel button can stop. Create it
-/// before spawning, so a cancel never finds a gap.
-pub struct Op {
-    id: u64,
-    cancel: Cancel,
+/// Settings a job runs with, as they are when it is queued.
+#[derive(Clone)]
+pub struct Ctx {
+    pub config: NixDataConfig,
+    pub syspkgs: SystemPkgs,
+    pub userpkgs: UserPkgs,
 }
 
-impl Op {
-    pub fn begin() -> Self {
-        let op = Op {
-            id: NEXT_OP.fetch_add(1, Ordering::Relaxed),
-            cancel: Cancel::new(),
-        };
-        *CURRENT.lock().unwrap() = Some((op.id, op.cancel.clone()));
-        REBUILD_BROKER.send(RebuildMsg::SetCancellable(true));
-        op
-    }
-}
-
-impl Drop for Op {
-    fn drop(&mut self) {
-        let mut cur = CURRENT.lock().unwrap();
-        if cur.as_ref().map_or(false, |(id, _)| *id == self.id) {
-            *cur = None;
-        }
-        REBUILD_BROKER.send(RebuildMsg::SetCancellable(false));
-    }
-}
-
-/// Asks the running profile operation to stop; false when there is none.
-pub fn cancel_current() -> bool {
-    match CURRENT.lock().unwrap().as_ref() {
-        Some((_, cancel)) => {
-            cancel.cancel();
-            true
-        }
-        None => false,
-    }
-}
-
-fn show(e: Event) {
-    match e {
-        Event::Line(_, line) => REBUILD_BROKER.send(RebuildMsg::UpdateText(line)),
-        Event::Progress(s) => REBUILD_BROKER.send(RebuildMsg::Progress(s)),
-    }
-}
-
-/// Success of the operation; an error is shown in the dialog and counts as failure.
-fn done(r: Result<bool>) -> bool {
-    match r {
-        Ok(ok) => ok,
-        Err(e) => {
-            warn!("Profile operation failed: {}", e);
-            REBUILD_BROKER.send(RebuildMsg::UpdateText(e.to_string()));
-            false
+impl Ctx {
+    fn job(&self, kind: JobKind) -> Job {
+        Job {
+            kind,
+            config: self.config.clone(),
+            syspkgs: self.syspkgs.clone(),
+            userpkgs: self.userpkgs.clone(),
         }
     }
 }
@@ -137,7 +98,7 @@ fn done(r: Result<bool>) -> bool {
 /// cancel can neither miss a batch that just started nor hit the next one.
 #[derive(Default)]
 struct QueueState {
-    queue: Queue<WorkPkg>,
+    queue: Queue<Job>,
     cancel: Option<Cancel>,
 }
 
@@ -147,30 +108,37 @@ fn with_state<R>(f: impl FnOnce(&mut QueueState) -> R) -> R {
     f(QUEUE.lock().unwrap().get_or_insert_with(Default::default))
 }
 
-fn with_queue<R>(f: impl FnOnce(&mut Queue<WorkPkg>) -> R) -> R {
+pub(super) fn with_queue<R>(f: impl FnOnce(&mut Queue<Job>) -> R) -> R {
     with_state(|s| f(&mut s.queue))
 }
 
-fn action_of(a: &PkgAction) -> Action {
-    match a {
-        PkgAction::Install => Action::Install,
-        PkgAction::Remove => Action::Remove,
+/// Queue key of a package operation. Profile keys are the bare attribute;
+/// the others carry their type so the same package in two places stays apart.
+pub fn pkg_key(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> String {
+    match (pkgtype, userpkgs) {
+        (InstallType::System, _) => format!("system:{pkg}"),
+        (InstallType::User, UserPkgs::Env) => format!("env:{pkg}"),
+        (InstallType::User, UserPkgs::Profile) => pkg.to_string(),
     }
 }
 
-fn changed() {
-    QUEUE_PANEL_BROKER.send(QueuePanelMsg::Refresh);
+/// Tells every view that shows queue state.
+pub(super) fn changed() {
+    ACTIVITY_BROKER.send(ActivityMsg::Refresh);
+    ACTIVITYLOG_BROKER.send(LogMsg::Refresh);
     PKGPAGE_BROKER.send(PkgMsg::QueueChanged);
 }
 
-/// Queues a profile install or removal for the package `work.pkg`. False when
-/// the same action for it is already queued or running.
-pub fn enqueue(work: WorkPkg) -> bool {
-    let item = Item {
-        key: work.pkg.clone(),
-        action: action_of(&work.action),
-        payload: work,
-    };
+/// Every Done, Failed or Cancelled item ends here, whatever stopped it, so
+/// the busy marks of the installed page always clear.
+fn finished(job: &Job, ok: bool) {
+    if let JobKind::Pkg(work) = &job.kind {
+        PKGPAGE_BROKER.send(PkgMsg::JobFinished(work.clone(), ok));
+    }
+}
+
+fn enqueue_job(key: String, action: Action, job: Job) -> bool {
+    let item = Item { id: 0, key, action, payload: job };
     let (added, spawn) = with_queue(|q| {
         let added = q.enqueue(item);
         (added, added && q.claim_runner())
@@ -184,68 +152,154 @@ pub fn enqueue(work: WorkPkg) -> bool {
     added
 }
 
+/// Queues a package install or removal. False when the same one is already
+/// queued or running.
+pub fn enqueue(work: WorkPkg, ctx: Ctx) -> bool {
+    if work.block {
+        return false;
+    }
+    let key = pkg_key(&work.pkg, &work.pkgtype, &ctx.userpkgs);
+    let action = match (&work.pkgtype, &ctx.userpkgs, &work.action) {
+        (InstallType::User, UserPkgs::Profile, PkgAction::Install) => Action::Install,
+        (InstallType::User, UserPkgs::Profile, PkgAction::Remove) => Action::Remove,
+        _ => Action::Exclusive,
+    };
+    let job = ctx.job(JobKind::Pkg(work));
+    enqueue_job(key, action, job)
+}
+
+/// Queues an update. False when the same update is already queued or running.
+pub fn enqueue_update(update: UpdateJob, ctx: Ctx) -> bool {
+    let key = match update.scope {
+        UpdateType::System => "update:system",
+        UpdateType::User => "update:user",
+        UpdateType::All => "update:all",
+    };
+    let job = ctx.job(JobKind::Update(update));
+    enqueue_job(key.to_string(), Action::Exclusive, job)
+}
+
 /// What the package's page shows while it is in the queue.
-pub fn state_label(key: &str) -> Option<&'static str> {
-    with_queue(|q| q.key_status(key)).map(|s| match s {
-        (Action::Install, Status::Queued) => "Queued",
-        (Action::Install, Status::Running) => "Installing…",
-        (Action::Remove, Status::Queued) => "Removal queued",
-        (Action::Remove, Status::Running) => "Removing…",
+pub fn state_label(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> Option<&'static str> {
+    let key = pkg_key(pkg, pkgtype, userpkgs);
+    with_queue(|q| q.key_item(&key).map(|(i, s)| (i.payload.is_remove(), s))).map(|s| match s {
+        (false, Status::Queued) => "Queued",
+        (false, Status::Running) => "Installing…",
+        (true, Status::Queued) => "Removal queued",
+        (true, Status::Running) => "Removing…",
     })
 }
 
-/// Drops the queued items for `key` (returned, to clear their busy marks) or,
-/// when it is part of the running batch, cancels that batch.
-pub fn cancel_item(key: &str) -> Vec<WorkPkg> {
+/// The queued or running entry for the package, to open its log.
+pub fn active_id(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> Option<u64> {
+    let key = pkg_key(pkg, pkgtype, userpkgs);
+    with_queue(|q| q.key_item(&key).map(|(i, _)| i.id))
+}
+
+/// A queued entry can always be dropped; a running one only if its job can be stopped.
+pub fn can_cancel(entry: &Entry<Job>) -> bool {
+    entry.state == queue::EntryState::Queued || entry.payload.cancellable()
+}
+
+/// `can_cancel` for the package's queued or running entry.
+pub fn pkg_can_cancel(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> bool {
+    let key = pkg_key(pkg, pkgtype, userpkgs);
+    with_queue(|q| q.key_item(&key).map(|(i, s)| s == Status::Queued || i.payload.cancellable())).unwrap_or(false)
+}
+
+/// Drops the queued entry, or asks the running one to stop. Cancelling a row
+/// of a running batch stops that whole Nix command.
+pub fn cancel(id: u64) {
     let gone = with_state(|s| {
-        let gone = s.queue.cancel_queued(key);
-        if gone.is_empty() && matches!(s.queue.key_status(key), Some((_, Status::Running))) {
-            if let Some(c) = &s.cancel {
-                c.cancel();
+        let gone = s.queue.cancel_queued_id(id);
+        if gone.is_none() {
+            let running = s.queue.running().and_then(|b| b.items.iter().find(|i| i.id == id));
+            if running.map_or(false, |i| i.payload.cancellable()) {
+                if let Some(c) = &s.cancel {
+                    c.cancel();
+                }
             }
         }
         gone
     });
-    if !gone.is_empty() {
+    if let Some(item) = gone {
+        finished(&item.payload, false);
         changed();
     }
-    gone.into_iter().map(|i| i.payload).collect()
 }
 
-/// Cancels the running batch; its items are reported as cancelled, not retried.
-pub fn cancel_queue_batch() {
-    if let Some(c) = &with_state(|s| s.cancel.clone()) {
-        c.cancel();
+/// Puts a failed or cancelled entry back in the queue; false when the same work is active.
+pub fn retry(id: u64) -> bool {
+    let (ok, spawn) = with_queue(|q| {
+        // The installed page's busy mark belongs to the original click.
+        let ok = q.retry(id, |job| {
+            if let JobKind::Pkg(work) = &mut job.kind {
+                work.notify = None;
+            }
+        });
+        (ok, ok && q.claim_runner())
+    });
+    if ok {
+        changed();
+    }
+    if spawn {
+        relm4::spawn(run_queue());
+    }
+    ok
+}
+
+pub fn remove(id: u64) {
+    if with_queue(|q| q.remove(id)) {
+        changed();
     }
 }
 
-pub struct Snapshot {
-    /// The running batch, e.g. "Installing hello, jq"; `None` when idle.
-    pub title: Option<String>,
-    pub waiting: usize,
+pub fn clear_finished() {
+    if with_queue(|q| q.clear_finished()) > 0 {
+        changed();
+    }
 }
 
-pub fn snapshot() -> Snapshot {
-    with_queue(|q| Snapshot {
-        title: q.running().map(|b| {
-            let names: Vec<_> = b
-                .items
-                .iter()
-                .map(|i| if i.payload.pname.is_empty() { i.key.as_str() } else { i.payload.pname.as_str() })
-                .collect();
-            let what = match b.action {
-                Action::Install => "Installing",
-                Action::Remove => "Removing",
-            };
-            match names[..] {
-                [one] if b.retry => format!("{what} {one} on its own"),
-                [one] => format!("{what} {one}"),
-                _ if names.len() <= 3 => format!("{what} {}", names.join(", ")),
-                _ => format!("{what} {} packages", names.len()),
-            }
-        }),
-        waiting: q.waiting(),
-    })
+pub fn entries() -> Vec<Entry<Job>> {
+    with_queue(|q| q.entries())
+}
+
+pub fn entry(id: u64) -> Option<Entry<Job>> {
+    with_queue(|q| q.entry_by_id(id))
+}
+
+pub fn log_since(id: u64, seen: u64) -> (Vec<String>, u64) {
+    with_queue(|q| q.log_since(id, seen))
+}
+
+/// Running plus queued items, and failures nobody has looked at.
+pub fn counts() -> (usize, usize) {
+    with_queue(|q| (q.active(), q.unseen_failures()))
+}
+
+pub fn mark_failures_seen() {
+    with_queue(|q| q.mark_failures_seen());
+}
+
+/// Work is running or waiting.
+pub fn is_busy() -> bool {
+    with_queue(|q| q.active() > 0)
+}
+
+pub fn has_running() -> bool {
+    with_queue(|q| q.running().is_some())
+}
+
+/// Drops everything waiting and asks the running batch to stop.
+pub fn stop_all() {
+    let (gone, cancel) = with_state(|s| (s.queue.cancel_all_queued(), s.cancel.clone()));
+    for item in &gone {
+        finished(&item.payload, false);
+    }
+    if let Some(c) = cancel {
+        c.cancel();
+    }
+    changed();
 }
 
 /// Runs batches until the queue is empty. Every failure is reported and the
@@ -261,7 +315,6 @@ async fn run_queue() {
         }) else {
             break;
         };
-        QUEUE_PANEL_BROKER.send(QueuePanelMsg::Progress(Default::default()));
         changed();
 
         let result = run_batch(nix, &batch, &cancel).await;
@@ -270,22 +323,8 @@ async fn run_queue() {
             s.queue.complete(result)
         });
 
-        let mut failures = vec![];
         for o in &outcomes {
-            let ok = o.result.is_ok();
-            if let Err(text) = &o.result {
-                if !cancel.is_cancelled() {
-                    let what = match o.item.action {
-                        Action::Install => "Installing",
-                        Action::Remove => "Removing",
-                    };
-                    failures.push((format!("{what} {} failed", o.item.key), text.clone()));
-                }
-            }
-            PKGPAGE_BROKER.send(PkgMsg::ProfileFinished(o.item.payload.clone(), ok));
-        }
-        if !failures.is_empty() {
-            QUEUE_PANEL_BROKER.send(QueuePanelMsg::AddFailures(failures));
+            finished(&o.item.payload, o.result.is_ok());
         }
         if !outcomes.is_empty() {
             // One refresh per command, not per package.
@@ -296,57 +335,82 @@ async fn run_queue() {
     changed();
 }
 
-/// Longest output line kept for the panel's failure text.
-const MAX_LINE: usize = 1000;
+/// Output of the running command: every line goes to the log of its entries;
+/// the last few explain a failure.
+#[derive(Default)]
+struct Lines {
+    tail: VecDeque<String>,
+}
 
-async fn run_batch(nix: &Nix, batch: &queue::Batch<WorkPkg>, cancel: &Cancel) -> BatchResult {
-    let mut tail: VecDeque<String> = VecDeque::new();
-    let mut sink = |e: Event| match e {
-        Event::Line(_, line) => {
-            if tail.len() == 12 {
-                tail.pop_front();
-            }
-            tail.push_back(line.chars().take(MAX_LINE).collect());
+impl Lines {
+    fn push(&mut self, line: &str) {
+        let line: String = line.chars().take(queue::MAX_LINE_CHARS).collect();
+        with_queue(|q| q.log_push(&line));
+        if self.tail.len() == 12 {
+            self.tail.pop_front();
         }
-        Event::Progress(s) => QUEUE_PANEL_BROKER.send(QueuePanelMsg::Progress(s)),
-    };
-    let keys = batch.keys();
+        self.tail.push_back(line);
+    }
+
+    fn text(&self) -> String {
+        self.tail.iter().cloned().collect::<Vec<_>>().join("\n")
+    }
+}
+
+fn progress(s: &Summary) {
+    with_queue(|q| q.set_progress(s.fraction, s.label()));
+}
+
+fn profile_sink(lines: &mut Lines) -> impl FnMut(Event) + Send + '_ {
+    move |e| match e {
+        Event::Line(_, line) => lines.push(&line),
+        Event::Progress(s) => progress(&s),
+    }
+}
+
+async fn run_batch(nix: &Nix, batch: &queue::Batch<Job>, cancel: &Cancel) -> BatchResult {
+    let mut lines = Lines::default();
     let res = match batch.action {
         Action::Install => {
-            let installables: Vec<String> = keys.iter().map(|k| format!("nixpkgs#{k}")).collect();
-            ops::add_many(nix, &installables, cancel, &mut sink).await
+            let installables: Vec<String> = batch.keys().iter().map(|k| format!("nixpkgs#{k}")).collect();
+            ops::add_many(nix, &installables, cancel, profile_sink(&mut lines)).await
         }
-        Action::Remove => match element_names(&keys).await {
-            Ok(names) => ops::remove(nix, &names, cancel, &mut sink).await,
+        Action::Remove => match element_names(&batch.keys()).await {
+            Ok(names) => ops::remove(nix, &names, cancel, profile_sink(&mut lines)).await,
             Err(e) => Err(e),
         },
+        Action::Exclusive => {
+            let mut sink = |line: String| lines.push(&line);
+            jobs::run(&batch.items[0].payload, cancel, &mut sink).await
+        }
     };
     match res {
         Ok(true) => BatchResult::Done,
         _ if cancel.is_cancelled() => BatchResult::Cancelled,
         Ok(false) => {
-            let text = tail.iter().cloned().collect::<Vec<_>>().join("
-");
+            let text = lines.text();
             BatchResult::Failed(if text.is_empty() { "nix exited with an error".into() } else { text })
         }
         Err(e) => {
-            warn!("Profile operation failed: {}", e);
+            warn!("Operation failed: {}", e);
+            lines.push(&e.to_string());
             BatchResult::Failed(e.to_string())
         }
     }
 }
 
 /// Upgrades everything, after removing the entries behind `remove_first`.
-pub async fn upgrade_all(op: &Op, remove_first: &[String]) -> bool {
-    done(async {
-        let nix = nix().await;
-        if remove_first.is_empty() {
-            return ops::upgrade_all(nix, &op.cancel, show).await;
-        }
-        let names = element_names(remove_first).await?;
-        ops::remove_then_upgrade_all(nix, &names, &op.cancel, show).await
+pub async fn upgrade_all(cancel: &Cancel, remove_first: &[String], sink: jobs::Sink<'_>) -> Result<bool> {
+    let nix = nix().await;
+    let on_event = |e: Event| match e {
+        Event::Line(_, line) => sink(line),
+        Event::Progress(s) => progress(&s),
+    };
+    if remove_first.is_empty() {
+        return ops::upgrade_all(nix, cancel, on_event).await;
     }
-    .await)
+    let names = element_names(remove_first).await?;
+    ops::remove_then_upgrade_all(nix, &names, cancel, on_event).await
 }
 
 /// Installed nixpkgs entries the next upgrade cannot take, as `key -> reason`.
