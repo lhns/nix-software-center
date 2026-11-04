@@ -310,7 +310,7 @@ impl ActivityLogModel {
         if self.follow.get() {
             // Also without new lines: the first scroll can come before the view has a size.
             // scroll_to_mark waits for the text to be laid out, unlike setting the adjustment.
-            self.view.scroll_to_mark(&self.end, 0.0, false, 0.0, 1.0);
+            self.view.scroll_to_mark(&self.end, 0.0, true, 0.0, 1.0);
         }
         if entry.state == EntryState::Running && !self.ticking.get() {
             self.ticking.set(true);

@@ -1872,7 +1872,7 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                     InstallType::System => work.pkg.to_string(),
                 };
                 self.installedpagebusy
-                    .retain(|(x, y)| x != &p && y != &work.pkgtype);
+                    .retain(|(x, y)| x != &p || y != &work.pkgtype);
                 self.installedpage.emit(InstalledPageMsg::UnsetBusy(work));
             }
             AppMsg::OpenCategoryPage(category) => {

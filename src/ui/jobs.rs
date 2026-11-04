@@ -50,13 +50,6 @@ impl UpdateJob {
     }
 }
 
-#[allow(dead_code)]
-enum NscCmd {
-    Rebuild,
-    Channel,
-    All,
-}
-
 impl Job {
     pub fn is_remove(&self) -> bool {
         matches!(&self.kind, JobKind::Pkg(w) if w.action == PkgAction::Remove)
@@ -129,10 +122,10 @@ pub async fn run(job: &Job, cancel: &Cancel, sink: Sink<'_>) -> Result<bool> {
             }
         },
         JobKind::Update(u) => match u.scope {
-            UpdateType::System => runcmd(NscCmd::All, config, job.syspkgs.clone(), u.rm_sys.clone(), sink).await,
+            UpdateType::System => runcmd(config, job.syspkgs.clone(), u.rm_sys.clone(), sink).await,
             UpdateType::User => updateuser(job, u.rm_user.clone(), cancel, sink).await,
             UpdateType::All => {
-                if runcmd(NscCmd::All, config, job.syspkgs.clone(), u.rm_sys.clone(), &mut *sink).await? {
+                if runcmd(config, job.syspkgs.clone(), u.rm_sys.clone(), &mut *sink).await? {
                     updateuser(job, u.rm_user.clone(), cancel, sink).await
                 } else {
                     Ok(false)
@@ -280,7 +273,6 @@ async fn installsys(
 }
 
 async fn runcmd(
-    cmd: NscCmd,
     config: NixDataConfig,
     syspkgs: SystemPkgs,
     rmpkgs: Option<Vec<String>>,
@@ -338,123 +330,104 @@ async fn runcmd(
         vec![]
     };
 
-    let mut cmd = match cmd {
-        NscCmd::Rebuild => tokio::process::Command::new("pkexec")
-            .arg(&exe)
-            .arg("rebuild")
-            .arg("--generations")
-            .arg(config.generations.unwrap_or(0).to_string())
-            .arg("--")
-            .arg("switch")
-            .args(&rebuildargs)
-            .stderr(Stdio::piped())
-            .spawn()?,
-        NscCmd::Channel => tokio::process::Command::new("pkexec")
-            .arg(&exe)
-            .arg("channel")
-            .arg("--output")
-            .arg(&systemconfig)
-            .stderr(Stdio::piped())
-            .spawn()?,
-        NscCmd::All => match syspkgs {
-            SystemPkgs::Legacy => {
-                if let Some(rmpkgs) = rmpkgs {
-                    let newconfig =
-                        match nix_editor::write::rmarr(&f, "environment.systemPackages", rmpkgs) {
-                            Ok(x) => x,
-                            Err(_) => {
-                                return Err(anyhow!("Failed to write configuration.nix"));
-                            }
-                        };
-                    let mut cmd = tokio::process::Command::new("pkexec")
-                        .arg(&exe)
-                        .arg("channel")
-                        .arg("--rebuild")
-                        .arg("--update")
-                        .arg("--generations")
-                        .arg(config.generations.unwrap_or(0).to_string())
-                        .arg("--output")
-                        .arg(&systemconfig)
-                        .arg("--")
-                        .arg("switch")
-                        .args(&rebuildargs)
-                        .stderr(Stdio::piped())
-                        .stdin(Stdio::piped())
-                        .spawn()?;
-                    cmd.stdin
-                        .take()
-                        .unwrap()
-                        .write_all(newconfig.as_bytes())
-                        .await?;
-                    cmd
-                } else {
-                    tokio::process::Command::new("pkexec")
-                        .arg(&exe)
-                        .arg("channel")
-                        .arg("--rebuild")
-                        .arg("--generations")
-                        .arg(config.generations.unwrap_or(0).to_string())
-                        .arg("--")
-                        .arg("switch")
-                        .args(&rebuildargs)
-                        .stderr(Stdio::piped())
-                        .spawn()?
-                }
+    let mut cmd = match syspkgs {
+        SystemPkgs::Legacy => {
+            if let Some(rmpkgs) = rmpkgs {
+                let newconfig =
+                    match nix_editor::write::rmarr(&f, "environment.systemPackages", rmpkgs) {
+                        Ok(x) => x,
+                        Err(_) => {
+                            return Err(anyhow!("Failed to write configuration.nix"));
+                        }
+                    };
+                let mut cmd = tokio::process::Command::new("pkexec")
+                    .arg(&exe)
+                    .arg("channel")
+                    .arg("--rebuild")
+                    .arg("--update")
+                    .arg("--generations")
+                    .arg(config.generations.unwrap_or(0).to_string())
+                    .arg("--output")
+                    .arg(&systemconfig)
+                    .arg("--")
+                    .arg("switch")
+                    .args(&rebuildargs)
+                    .stderr(Stdio::piped())
+                    .stdin(Stdio::piped())
+                    .spawn()?;
+                cmd.stdin
+                    .take()
+                    .unwrap()
+                    .write_all(newconfig.as_bytes())
+                    .await?;
+                cmd
+            } else {
+                tokio::process::Command::new("pkexec")
+                    .arg(&exe)
+                    .arg("channel")
+                    .arg("--rebuild")
+                    .arg("--generations")
+                    .arg(config.generations.unwrap_or(0).to_string())
+                    .arg("--")
+                    .arg("switch")
+                    .args(&rebuildargs)
+                    .stderr(Stdio::piped())
+                    .spawn()?
             }
-            SystemPkgs::Flake => {
-                if let Some(rmpkgs) = rmpkgs {
-                    let newconfig =
-                        match nix_editor::write::rmarr(&f, "environment.systemPackages", rmpkgs) {
-                            Ok(x) => x,
-                            Err(_) => {
-                                return Err(anyhow!("Failed to write configuration.nix"));
-                            }
-                        };
-                    let mut cmd = tokio::process::Command::new("pkexec")
-                        .arg(&exe)
-                        .arg("flake")
-                        .arg("--rebuild")
-                        .arg("--flakepath")
-                        .arg(&flakepath)
-                        .arg("--update")
-                        .arg("--generations")
-                        .arg(config.generations.unwrap_or(0).to_string())
-                        .arg("--output")
-                        .arg(&systemconfig)
-                        .arg("--")
-                        .arg("switch")
-                        .arg("--impure")
-                        .args(&rebuildargs)
-                        .stderr(Stdio::piped())
-                        .stdin(Stdio::piped())
-                        .spawn()?;
-                    cmd.stdin
-                        .take()
-                        .unwrap()
-                        .write_all(newconfig.as_bytes())
-                        .await?;
-                    cmd
-                } else {
-                    tokio::process::Command::new("pkexec")
-                        .arg(&exe)
-                        .arg("flake")
-                        .arg("--rebuild")
-                        .arg("--flakepath")
-                        .arg(&flakepath)
-                        .arg("--generations")
-                        .arg(config.generations.unwrap_or(0).to_string())
-                        .arg("--output")
-                        .arg(&systemconfig)
-                        .arg("--")
-                        .arg("switch")
-                        .arg("--impure")
-                        .args(&rebuildargs)
-                        .stderr(Stdio::piped())
-                        .spawn()?
-                }
+        }
+        SystemPkgs::Flake => {
+            if let Some(rmpkgs) = rmpkgs {
+                let newconfig =
+                    match nix_editor::write::rmarr(&f, "environment.systemPackages", rmpkgs) {
+                        Ok(x) => x,
+                        Err(_) => {
+                            return Err(anyhow!("Failed to write configuration.nix"));
+                        }
+                    };
+                let mut cmd = tokio::process::Command::new("pkexec")
+                    .arg(&exe)
+                    .arg("flake")
+                    .arg("--rebuild")
+                    .arg("--flakepath")
+                    .arg(&flakepath)
+                    .arg("--update")
+                    .arg("--generations")
+                    .arg(config.generations.unwrap_or(0).to_string())
+                    .arg("--output")
+                    .arg(&systemconfig)
+                    .arg("--")
+                    .arg("switch")
+                    .arg("--impure")
+                    .args(&rebuildargs)
+                    .stderr(Stdio::piped())
+                    .stdin(Stdio::piped())
+                    .spawn()?;
+                cmd.stdin
+                    .take()
+                    .unwrap()
+                    .write_all(newconfig.as_bytes())
+                    .await?;
+                cmd
+            } else {
+                tokio::process::Command::new("pkexec")
+                    .arg(&exe)
+                    .arg("flake")
+                    .arg("--rebuild")
+                    .arg("--flakepath")
+                    .arg(&flakepath)
+                    .arg("--generations")
+                    .arg(config.generations.unwrap_or(0).to_string())
+                    .arg("--output")
+                    .arg(&systemconfig)
+                    .arg("--")
+                    .arg("switch")
+                    .arg("--impure")
+                    .args(&rebuildargs)
+                    .stderr(Stdio::piped())
+                    .spawn()?
             }
-            SystemPkgs::None => return Ok(true),
-        },
+        }
+        SystemPkgs::None => return Ok(true),
     };
 
     let stderr = cmd.stderr.take().unwrap();
