@@ -273,6 +273,8 @@ impl Component for PkgModel {
                                 set_selection_mode: gtk::SelectionMode::None,
                                 // Details
                                 append = &gtk::FlowBoxChild {
+                                    set_focusable: false,
+                                    add_css_class: "nsc-layout-row",
                                     gtk::Box {
                                         set_halign: gtk::Align::Fill,
                                         set_valign: gtk::Align::Center,
@@ -312,6 +314,8 @@ impl Component for PkgModel {
 
                                 // Install options
                                 append = &gtk::FlowBoxChild {
+                                    set_focusable: false,
+                                    add_css_class: "nsc-layout-row",
                                     set_halign: gtk::Align::End,
                                     gtk::Box {
                                         set_halign: gtk::Align::End,
@@ -723,6 +727,8 @@ impl Component for PkgModel {
                             set_selection_mode: gtk::SelectionMode::None,
                             set_max_children_per_line: 2,
                             append = &gtk::FlowBoxChild {
+                                set_focusable: false,
+                                add_css_class: "nsc-layout-row",
                                 set_hexpand: true,
                                 gtk::Box {
                                     set_spacing: 10,
@@ -865,6 +871,8 @@ impl Component for PkgModel {
                                 }
                             },
                             append = &gtk::FlowBoxChild {
+                                set_focusable: false,
+                                add_css_class: "nsc-layout-row",
                                 set_hexpand: true,
                                 gtk::Box {
                                     set_spacing: 10,
@@ -1073,6 +1081,11 @@ impl Component for PkgModel {
             border-right-width: 0;
             border-top-width: 1px;
             border-bottom-width: 1px;
+        }
+            flowboxchild.nsc-layout-row,
+            flowboxchild.nsc-layout-row:hover,
+            flowboxchild.nsc-layout-row:active {
+            background: none;
         }",
         );
         let widgets = view_output!();
