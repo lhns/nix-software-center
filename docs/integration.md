@@ -9,11 +9,11 @@ zstd, slimming) has merged in both repos.
 | what | where | notes |
 | --- | --- | --- |
 | app | `default.nix`, `{ pkgdb ? null, onlineCheckUrl ? null, nixos-appstream-data ? <snowfall, converted> }` | `final.callPackage`-able; builds against the caller's nixpkgs |
-| package index | `nix/pkgdb.nix` → `$out/nixpkgs.db` | nix-data's SQLite schema; evaluated from the caller's `pkgs.path` for its own system; no unfree; `info` table holds `nixpkgs-source` and `system` |
+| package index | `nix/pkgdb.nix` → `$out/nixpkgs.db` | nix-data's SQLite schema plus `meta.unfree`; evaluated from the caller's `pkgs.path` for its own system; free and unfree packages both in it; `info` table holds `nixpkgs-source`, `system` and `nsc-catalogue-version` |
 | `NSC_PKGDB` | env, set by the wrapper when `pkgdb` is given (`--set-default`) | replaces the nix-data-db download for both the package list and "latest versions" |
 | `NSC_ONLINE_CHECK_URL` | env, set by the wrapper when `onlineCheckUrl` is given | URL the app GETs before installs/updates; empty disables the check |
 | smoke binary | `$out/libexec/nix-software-center/nsc-backend-smoke` | headless; same backend functions as the UI; reads `NSC_PKGDB` |
-| AppStream data | `nix/appstream.nix` | snowfallorg/nixos-appstream-data, free section, 64/128 px icons |
+| AppStream data | `nix/appstream.nix` | snowfallorg/nixos-appstream-data, free and unfree sections merged, 64/128 px icons |
 
 The app only runs `nix profile list --json|add|remove|upgrade`. It knows nothing about
 home-manager, profile hooks or kww; success is the exit code, the installed list is re-read
@@ -22,7 +22,7 @@ from `nix profile list --json` after each command, and progress comes from `json
 
 All work goes through one app-wide queue, shown in the Activity tab; the window stays usable. Profile
 installs and removals are batched: one `nix profile` command runs at a time, all queued installs
-become one `nix profile add a b c --impure` (`install` on old Nix), queued removals one
+become one `nix profile add a b c` (`install` on old Nix), queued removals one
 `nix profile remove a b`, in queue order. Nix reverts a failed command as a whole, so a failed batch
 of several is retried package by package. Updates, system and nix-env operations are exclusive: they
 run alone and nothing queued after them starts first. Finished entries (with their log) stay in the
@@ -88,8 +88,10 @@ shows the list. AppStream data: 25.6 MB, 1,450 apps.
    parses declared elements (`storePaths: []`, `backend` fields) on a real desktop, and the smoke
    proves it leaves the others alone (check `tree` is still listed afterwards).
 5. ADR 0013: amend the "No GUI for now" consequence with a dated line once it ships.
-6. Unfree: not supported. The index omits unfree packages; the app adds `--impure` as upstream
-   does, but the starter flake's `legacyPackages` has no unfree config, so nothing changes there.
+6. Unfree: "nixpkgs unfree" is a built-in source that installs from `NSC_UNFREE_FLAKE`
+   (below). Set it to `nixpkgs-unfree`, a registry entry pointing at a flake with
+   `config.allowUnfree`, and resolve `flake:nixpkgs-unfree` in `packages.json` restores the way
+   `flake:nixpkgs` is, so restores survive image updates.
 
 ## Not covered
 
@@ -97,3 +99,47 @@ shows the list. AppStream data: 25.6 MB, 1,450 apps.
   `nix profile upgrade --all`).
 - Dark mode follows the `org.freedesktop.appearance color-scheme` portal setting; verify on a
   desktop that a dark Plasma gives a dark app.
+
+## Package sources and the catalogue format
+
+Sources are flakes that publish packages plus a prebuilt catalogue; users manage them in
+Preferences (Sources). Two are built in: "nixpkgs" and "nixpkgs unfree", both read from the baked-in
+`nixpkgs.db`, so they work offline.
+
+### Options (`default.nix`) and environment
+
+| option | env (wrapper `--set-default`) | meaning |
+| --- | --- | --- |
+| `systemPackages ? true` | `NSC_SYSTEM_PACKAGES=0` | read once at startup. `false` forces no system packages, no welcome screen, no configuration/flake preferences and refuses system jobs; Preferences then holds only Sources and the menu entry reads "Sources" |
+| `unfreeFlake ? null` | `NSC_UNFREE_FLAKE` | flake that installs unfree apps, as `<flake>#<attr>`. Default `github:lhns/nix-software-center?dir=nix/unfree` (its own locked `nixpkgs`, `allowUnfree`, no `--impure`; a deployer that wants the system's pin sets `NSC_UNFREE_FLAKE`, e.g. a registry flake). A bare registry name such as `nixpkgs-unfree` is recognised as `flake:nixpkgs-unfree` in `nix profile list` |
+| `unfreeListedDefault ? null` | `NSC_UNFREE_LISTED_DEFAULT` (`0`/`1`) | whether "nixpkgs unfree" is listed until the user toggles it; default on. Hiding only hides: installed apps keep their label and updates |
+
+User sources and explicit toggles live in `~/.config/nix-software-center/sources.json`; an untouched
+built-in follows the deployer default. A file that does not parse is kept as `sources.json.bad` and
+defaults are used until the user changes something.
+
+### Catalogue (for source authors)
+
+The flake outputs `nscCatalogue.<system>`, a directory with `catalogue.db` (SQLite) and optionally
+`share/app-info/`. Make it a fixed-output fetch so clients only download; the app runs
+`nix build <flake>#nscCatalogue.<system> --out-link ~/.cache/nix-software-center/catalogues/<id>` when the
+source is added, on Refresh and when older than a day.
+
+Tables (plain tables only; a view, trigger or virtual table makes the whole source be refused):
+
+- `pkgs(attribute, pname, version, system)`
+- `meta(attribute, description, longdescription, homepage, license, platforms, maintainers, position, broken, insecure, unfree)`
+  (`license` and `maintainers` are JSON text as in `nix/pkgdb.nix`; `unfree` may be missing, then 0)
+- `info(key, value)` with `nsc-catalogue-version` = `1`; any other version is refused
+
+`attribute` is an opaque id within the source, installed as `<flake>#<attribute>`, so it must be an
+output of the flake's `legacyPackages.<system>` or `packages.<system>`. `attribute` and `pname`
+must match `[A-Za-z0-9_+.-]+` (they reach shell strings); other rows are dropped and counted.
+Text is shown as plain text, never as markup. Third-party apps are listed from the catalogue only
+(no AppStream data yet), as `<sourceid>:<attribute>` in the app and with their source named.
+A name that two sources share is listed twice, once per source.
+
+Installing an unfree app asks for consent at the Install click. The installed element, whose
+`originalUrl` names the unfree flake, is the acceptance: updates and restores do not ask.
+Removing a source never uninstalls: its apps stay, keep updating from the flake and show
+"source removed".

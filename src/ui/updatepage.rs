@@ -525,6 +525,17 @@ impl FactoryComponent for UpdateItemModel {
                         set_halign: gtk::Align::Start,
                         add_css_class: "dim-label",
                         add_css_class: "caption",
+                        set_label: &super::sourceinfo::badges(self.item.pkg.as_deref().unwrap_or(&self.item.pname)).unwrap_or_default(),
+                        set_visible: super::sourceinfo::badges(self.item.pkg.as_deref().unwrap_or(&self.item.pname)).is_some(),
+                        set_ellipsize: pango::EllipsizeMode::End,
+                        set_lines: 1,
+                        set_wrap: true,
+                        set_max_width_chars: 0,
+                    },
+                    gtk::Label {
+                        set_halign: gtk::Align::Start,
+                        add_css_class: "dim-label",
+                        add_css_class: "caption",
                         set_label: {
                             &(if let Some(old) = &self.item.verfrom {
                                 if let Some(new) = &self.item.verto {

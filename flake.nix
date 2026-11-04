@@ -13,6 +13,11 @@
       in
       rec
       {
+        # The fixture index in the catalogue layout of docs/integration.md.
+        nscCatalogue = pkgs.runCommand "nsc-catalogue-small" { } ''
+          mkdir -p $out
+          cp ${packages.pkgdb-small}/nixpkgs.db $out/catalogue.db
+        '';
         packages = rec {
           appstream-data = pkgs.callPackage ./nix/appstream.nix { };
           # Full index for this system; not part of the default package so CI and builds stay cheap.

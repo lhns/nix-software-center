@@ -480,7 +480,7 @@ impl Component for AppModel {
         } else {
             UserPkgs::Env
         };
-        let nixos = Path::new("/etc/NIXOS").exists();
+        let nixos = nsc_backend::sources::is_nixos();
         let syspkgtype = if config.systemconfig.is_none() || !nixos {
             SystemPkgs::None
         } else {
@@ -639,6 +639,20 @@ impl Component for AppModel {
             .main_window
             .insert_action_group("menu", Some(&actions));
 
+        if !nsc_backend::sources::is_nixos() {
+            // Nothing to configure but the sources.
+            if let Some(menu) = widgets
+                .menu
+                .popover()
+                .and_then(|p| p.downcast::<gtk::PopoverMenu>().ok())
+                .and_then(|p| p.menu_model())
+                .and_then(|m| m.downcast::<gtk::gio::Menu>().ok())
+            {
+                menu.remove(0);
+                menu.insert(0, Some("Sources"), Some("menu.preferences"));
+            }
+        }
+
         widgets.main_stack.set_vhomogeneous(false);
         widgets.main_stack.set_hhomogeneous(false);
         let frontvs = widgets.viewstack.page(&widgets.frontpage);
@@ -715,7 +729,7 @@ impl Component for AppModel {
                 if let Err(e) = editconfig(self.config.clone()) {
                     warn!("Error editing config: {}", e);
                 }
-                let nixos = Path::new("/etc/NIXOS").exists();
+                let nixos = nsc_backend::sources::is_nixos();
                 self.syspkgtype = if self.config.systemconfig.is_none() || !nixos {
                     SystemPkgs::None
                 } else {
@@ -773,7 +787,7 @@ impl Component for AppModel {
                 if editconfig(self.config.clone()).is_err() {
                     warn!("Failed to update config");
                 }
-                let nixos = Path::new("/etc/NIXOS").exists();
+                let nixos = nsc_backend::sources::is_nixos();
                 if systemconfig.is_some() && nixos {
                     if self.syspkgtype == SystemPkgs::None {
                         if self.config.flake.is_some() {
@@ -813,7 +827,7 @@ impl Component for AppModel {
                     warn!("Failed to update config");
                 }
 
-                let nixos = Path::new("/etc/NIXOS").exists();
+                let nixos = nsc_backend::sources::is_nixos();
                 if nixos {
                     if flake.is_some() {
                         self.syspkgtype = SystemPkgs::Flake;
@@ -876,6 +890,9 @@ impl Component for AppModel {
                 }
                 cat_guard.drop();
                 self.busy = false;
+                if std::env::var("NSC_UI_TEST").is_err() {
+                    refresh_stale(sender.input_sender().clone());
+                }
                 if let Ok(dir) = std::env::var("NSC_UI_TEST") {
                     super::uitest::start(dir, root.clone().upcast(), sender.input_sender().clone());
                 }
@@ -931,6 +948,23 @@ impl Component for AppModel {
                                         UserPkgs::Env => pname.0,
                                         UserPkgs::Profile => pkg.to_string(),
                                     }),
+                                    installedsystem: installedsystem.contains(&pkg),
+                                })
+                            } else if let Ok((pname, description)) = sqlx::query_as::<_, (String, String)>(
+                                "SELECT pname, description FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = $1",
+                            )
+                            .bind(&pkg)
+                            .fetch_one(pool)
+                            .await
+                            {
+                                // Not in AppStream (third-party apps): the catalogue is all there is.
+                                pkgtiles.push(PkgTile {
+                                    pkg: pkg.to_string(),
+                                    name: pname.clone(),
+                                    pname,
+                                    icon: None,
+                                    summary: description,
+                                    installeduser: installeduser.contains_key(&pkg),
                                     installedsystem: installedsystem.contains(&pkg),
                                 })
                             }
@@ -1760,7 +1794,7 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                         warn!("Searchsplit: {:?}", searchsplit);
                         if let Ok(pkgpool) = &SqlitePool::connect(&format!("sqlite://{}", pkgdb)).await {
                             let mut queryb: QueryBuilder<Sqlite> = QueryBuilder::new(
-                                "SELECT pkgs.attribute, pkgs.pname, description, version FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE (",
+                                "SELECT pkgs.attribute, pkgs.pname, description, version FROM listed_pkgs AS pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE (",
                             );
                             for (i, q) in searchsplit.iter().enumerate() {
                                 if i == searchsplit.len() - 1 {
@@ -2205,6 +2239,32 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
             }
         }
     }
+}
+
+static STALE_REFRESHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// After startup: rebuilds catalogues older than a day, then reloads once if one changed. Never
+/// runs while loading.
+fn refresh_stale(input: relm4::Sender<AppMsg>) {
+    use nsc_backend::sources;
+    if STALE_REFRESHED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    relm4::spawn(async move {
+        let mut changed = false;
+        for s in super::sourceinfo::store().sources().into_iter().filter(|s| !s.builtin && s.enabled) {
+            if !sources::stale(&s.id, std::time::Duration::from_secs(24 * 3600)) {
+                continue;
+            }
+            let link = sources::catalogue_link(&s.id);
+            let before = std::fs::read_link(&link).ok();
+            let _ = sources::fetch(&s.id, &s.flake, std::time::Duration::from_secs(300)).await;
+            changed |= std::fs::read_link(&link).ok() != before;
+        }
+        if changed {
+            input.emit(AppMsg::TryLoad);
+        }
+    });
 }
 
 relm4::new_action_group!(MenuActionGroup, "menu");

@@ -11,6 +11,8 @@ pub mod pkgtile;
 pub mod preferencespage;
 pub mod screenshotfactory;
 pub mod searchpage;
+pub mod sourceinfo;
+pub mod sourcespage;
 pub mod uitest;
 pub mod unavailabledialog;
 pub mod updatepage;

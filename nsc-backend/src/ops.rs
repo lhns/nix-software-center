@@ -98,7 +98,7 @@ fn args(parts: &[&str], rest: &[String]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).chain(rest.iter().cloned()).collect()
 }
 
-/// `nix profile add <installable> --impure`, falling back to `install` for
+/// `nix profile add <installable>`, falling back to `install` for
 /// Nix versions that predate `add`.
 pub async fn add(
     nix: &Nix,
@@ -109,7 +109,7 @@ pub async fn add(
     add_many(nix, &[installable.to_string()], cancel, on_event).await
 }
 
-/// One `nix profile add a b c --impure` for all installables: Nix commits the
+/// One `nix profile add a b c` for all installables: Nix commits the
 /// whole command or none of it.
 pub async fn add_many(
     nix: &Nix,
@@ -121,8 +121,7 @@ pub async fn add_many(
         return Ok(true);
     }
     let _lock = run::lock().await;
-    let mut rest = installables.to_vec();
-    rest.push("--impure".to_string());
+    let rest = installables.to_vec();
     let verb = if USE_INSTALL.load(Ordering::Relaxed) { "install" } else { "add" };
     let (ok, unknown) = nix_run(
         nix,
@@ -218,7 +217,6 @@ async fn upgrade_locked(
     cancel: &Cancel,
     on_event: &mut (impl FnMut(Event) + Send),
 ) -> Result<bool> {
-    let tail = ["--impure".to_string()];
     let mut a = args(&["profile", "upgrade"], &[]);
     match names {
         None if nix.named_elements() => a.push("--all".into()),
@@ -226,6 +224,5 @@ async fn upgrade_locked(
         Some([]) => return Ok(true),
         Some(n) => a.extend(selectors(nix, n).await?),
     }
-    a.extend(tail);
     Ok(nix_run(nix, &a, cancel, on_event, "").await?.0)
 }

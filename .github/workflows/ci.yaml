@@ -31,6 +31,15 @@ jobs:
         run: |
           smoke=$(readlink -f result)/libexec/nix-software-center/nsc-backend-smoke
           HOME=$(mktemp -d) "$smoke" nixpkgs#hello --require-progress
+      # The default unfree flake must resolve and install unfree apps with
+      # no --impure on a fresh profile (the commit under test, not the default branch).
+      - name: unfree flake with its lock
+        run: |
+          nix --version
+          sha=${{ github.event.pull_request.head.sha || github.sha }}
+          export HOME=$(mktemp -d)
+          nix profile add "github:${{ github.repository }}/$sha?dir=nix/unfree#hello-unfree" -L
+          nix profile list | grep -q hello-unfree
       - name: devShell evaluates
         run: nix eval .#devShell.${{ matrix.system }}.drvPath
       - name: build appstream data
@@ -51,14 +60,20 @@ jobs:
           nix shell nixpkgs#weston nixpkgs#dbus -c bash -euo pipefail -c '
             weston --backend=headless --socket=wl-ci &
             for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.2; done
-            set +e
-            WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session --config-file="$(dirname "$(command -v dbus-daemon)")/../share/dbus-1/session.conf" -- timeout 120 app/bin/nix-software-center > shots/app.log 2>&1
-            rc=$?
-            set -e
-            tail -n 40 shots/app.log
-            [ "$rc" = 0 ] || { echo "::error::app exited with $rc"; exit 1; }
-            ! grep -E "panicked|LoadError|Error retrieving|Error connecting" shots/app.log || { echo "::error::error in log"; exit 1; }
-            for f in 01-activity 02-modal-running 03-hidden 04-modal-queued 05-modal-failed 06-badge; do
+            run_app() { # log name, then env assignments
+              log=$1; shift
+              set +e
+              env "$@" WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session --config-file="$(dirname "$(command -v dbus-daemon)")/../share/dbus-1/session.conf" -- timeout 120 app/bin/nix-software-center > "shots/$log" 2>&1
+              rc=$?
+              set -e
+              tail -n 40 "shots/$log"
+              [ "$rc" = 0 ] || { echo "::error::app exited with $rc"; exit 1; }
+              ! grep -E "panicked|LoadError|Error retrieving|Error connecting|Error merging" "shots/$log" || { echo "::error::error in log"; exit 1; }
+            }
+            run_app app.log NSC_TEST=1
+            # System packages off on a (faked) NixOS: no welcome screen, preferences hold only Sources.
+            run_app app-nosys.log NSC_SYSTEM_PACKAGES=0 NSC_FAKE_NIXOS=1
+            for f in 01-activity 02-modal-running 03-hidden 04-modal-queued 05-modal-failed 06-badge 07-tile-unfree 08-sources 09-add-source 10-consent-hostile 11-pkgpage-unfree 12-consent-real 13-installed nosys-01-main nosys-02-preferences; do
               [ -s "shots/$f.png" ] || { echo "::error::missing $f.png"; exit 1; }
             done
           '

@@ -1,6 +1,7 @@
 //! `nix profile list --json`.
 
 use crate::ops::Nix;
+use crate::sources::{origin, Origin, Source};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -75,34 +76,70 @@ pub async fn list(nix: &Nix) -> Result<Vec<ProfileElement>> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstalledPkg {
-    /// nixpkgs attribute, or `<originalUrl>#<attrPath>`.
+    /// nixpkgs attribute, `<sourceid>:<attribute>`, or `<originalUrl>#<attrPath>`.
     pub key: String,
     /// Element name, what remove/upgrade take.
     pub element: String,
-    /// `Some(key)` when the key is a nixpkgs attribute.
+    /// `Some(key)` when the key is an attribute of the package database.
     pub nixpkgs_attr: Option<String>,
     pub store_version: Option<String>,
+    /// Installed from a flake that is neither built in nor a configured source any more.
+    pub source_removed: bool,
 }
 
-/// Elements the app can show; ones without `attrPath`/`originalUrl` are skipped.
+/// Elements the app can show; ones without `attrPath`/`originalUrl` are skipped. Every
+/// `legacyPackages` element counts as nixpkgs.
 pub fn installed(elements: &[ProfileElement]) -> Vec<InstalledPkg> {
+    installed_in(elements, None)
+}
+
+/// As `installed`, with elements of configured sources keyed `<sourceid>:<attribute>`, and
+/// elements of unknown flakes kept apart (and flagged) instead of passing as nixpkgs.
+pub fn installed_in(elements: &[ProfileElement], sources: Option<(&[Source], &str)>) -> Vec<InstalledPkg> {
     elements
         .iter()
         .filter_map(|e| {
             let attr_path = e.attr_path.as_deref()?;
             let original_url = e.original_url.as_deref()?;
-            let (key, nixpkgs_attr) = match attr_path.splitn(3, '.').collect::<Vec<_>>()[..] {
-                ["legacyPackages", _system, attr] => (attr.to_string(), Some(attr.to_string())),
-                _ => (format!("{original_url}#{attr_path}"), None),
+            let attr = match attr_path.splitn(3, '.').collect::<Vec<_>>()[..] {
+                ["legacyPackages" | "packages", _system, attr] => Some(attr),
+                _ => None,
+            };
+            let is_legacy = attr_path.starts_with("legacyPackages.");
+            let mut source_removed = false;
+            let (key, nixpkgs_attr) = match (sources, attr) {
+                (None, Some(attr)) if is_legacy => (attr.to_string(), Some(attr.to_string())),
+                (None, _) => (format!("{original_url}#{attr_path}"), None),
+                (Some((srcs, unfree)), attr) => match (origin(srcs, unfree, original_url), attr) {
+                    (Origin::Builtin, Some(attr)) if is_legacy => (attr.to_string(), Some(attr.to_string())),
+                    (Origin::Source(s), Some(attr)) => {
+                        let k = format!("{}:{attr}", s.id);
+                        (k.clone(), Some(k))
+                    }
+                    (Origin::Unknown, Some(attr)) if is_legacy && looks_like_nixpkgs(original_url) => {
+                        (attr.to_string(), Some(attr.to_string()))
+                    }
+                    (o, _) => {
+                        source_removed = o == Origin::Unknown && !looks_like_nixpkgs(original_url);
+                        (format!("{original_url}#{attr_path}"), None)
+                    }
+                },
             };
             Some(InstalledPkg {
-                nixpkgs_attr: nixpkgs_attr.clone(),
+                nixpkgs_attr,
                 key,
                 element: e.name.clone(),
                 store_version: e.store_paths.first().and_then(|p| store_version(p)),
+                source_removed,
             })
         })
         .collect()
+}
+
+/// A hand-installed `github:NixOS/nixpkgs/...` is not a removed source.
+fn looks_like_nixpkgs(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    u.starts_with("github:nixos/nixpkgs") || u.starts_with("flake:nixpkgs") || u.starts_with("nixpkgs")
 }
 
 /// Version of a store path, with `builtins.parseDrvName` rules.
