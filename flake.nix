@@ -17,6 +17,8 @@
           appstream-data = pkgs.callPackage ./nix/appstream.nix { };
           # Full index for this system; not part of the default package so CI and builds stay cheap.
           pkgdb = pkgs.callPackage ./nix/pkgdb.nix { inherit system; };
+          # The fixture index of the pkgdb-small check, for the UI screenshot run in CI.
+          pkgdb-small = pkgs.callPackage ./nix/pkgdb.nix { path = ./nix/tests/pkgdb-small; inherit system; };
           nix-software-center = pkgs.callPackage ./default.nix { nixos-appstream-data = appstream-data; };
           # As the desktops ship it: own index, no online check.
           nix-software-center-full = pkgs.callPackage ./default.nix {

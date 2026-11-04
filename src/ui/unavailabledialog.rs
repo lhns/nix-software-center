@@ -4,7 +4,7 @@ use gtk::pango;
 use log::*;
 use relm4::{*, prelude::*, factory::*};
 use adw::prelude::*;
-use crate::{APPINFO, ui::{window::REBUILD_BROKER, rebuild::RebuildMsg}};
+use crate::APPINFO;
 
 use super::updatepage::{UpdatePageMsg, UpdateType};
 
@@ -92,7 +92,6 @@ impl SimpleComponent for UnavailableDialogModel {
         widgets.dialog.connect_response(None, move |_, resp| {
             match resp {
                 "cancel" => {
-                    REBUILD_BROKER.send(RebuildMsg::Close);
                     debug!("Response: cancel")
                 },
                 "continue" => {

@@ -1,6 +1,7 @@
 name: ci
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -38,6 +39,34 @@ jobs:
           du -shL appstream/share/app-info/xmls appstream/share/app-info/icons/nixos/* | tee -a "$GITHUB_STEP_SUMMARY"
       - name: pkgdb-small check
         run: nix build .#checks.${{ matrix.system }}.pkgdb-small -L
+      # Walks the Activity tab on a headless compositor; src/ui/uitest.rs writes the screenshots.
+      - name: UI screenshots
+        if: matrix.system == 'x86_64-linux'
+        run: |
+          nix build .#packages.${{ matrix.system }}.pkgdb-small -L -o pkgdb-small
+          export XDG_RUNTIME_DIR=$(mktemp -d) HOME=$(mktemp -d)
+          mkdir -p shots
+          export NSC_UI_TEST=$PWD/shots NSC_PKGDB=$(readlink -f pkgdb-small)/nixpkgs.db NSC_ONLINE_CHECK_URL= GSK_RENDERER=cairo
+          nix shell nixpkgs#weston nixpkgs#dbus -c bash -euo pipefail -c '
+            weston --backend=headless --socket=wl-ci &
+            for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.2; done
+            set +e
+            WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session --config-file="$(dirname "$(command -v dbus-daemon)")/../share/dbus-1/session.conf" -- timeout 120 result/bin/nix-software-center > shots/app.log 2>&1
+            rc=$?
+            set -e
+            tail -n 40 shots/app.log
+            [ "$rc" = 0 ] || { echo "::error::app exited with $rc"; exit 1; }
+            ! grep -E "panicked|LoadError|Error retrieving|Error connecting" shots/app.log || { echo "::error::error in log"; exit 1; }
+            for f in 01-activity 02-modal-running 03-hidden 04-modal-queued 05-modal-failed 06-badge; do
+              [ -s "shots/$f.png" ] || { echo "::error::missing $f.png"; exit 1; }
+            done
+          '
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.system == 'x86_64-linux'
+        with:
+          name: ui-screenshots
+          path: shots/
+          if-no-files-found: warn
 
   pkgdb:
     strategy:
