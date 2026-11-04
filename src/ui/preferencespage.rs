@@ -1,4 +1,4 @@
-use std::path::{PathBuf, Path};
+use std::path::PathBuf;
 use super::{sourcespage::SourcesGroup, window::AppMsg};
 use std::rc::Rc;
 use adw::prelude::*;

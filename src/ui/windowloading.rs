@@ -11,7 +11,6 @@ use rand::thread_rng;
 use relm4::adw::prelude::*;
 use relm4::*;
 use sqlx::SqlitePool;
-use std::path::Path;
 use std::{collections::HashMap, env};
 
 pub struct WindowAsyncHandler;

@@ -1528,6 +1528,13 @@ impl Component for PkgModel {
                 }
             }
             PkgMsg::NixShell => {
+                let quoted = match sourceinfo::installable(&self.pkg) {
+                    Ok(i) => sourceinfo::shell_quote(&i),
+                    Err(e) => {
+                        warn!("Cannot open a shell with {}: {}", self.pkg, e);
+                        return;
+                    }
+                };
                 let cmd = match self.userpkgtype {
                     UserPkgs::Env => {
                         format!("nix-shell -p {}", self.pkg)
