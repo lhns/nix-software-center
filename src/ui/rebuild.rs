@@ -249,17 +249,7 @@ impl SimpleComponent for RebuildModel {
             }
             RebuildMsg::Progress(p) => {
                 self.set_fraction(p.fraction);
-                let mut parts = vec![];
-                if let Some(s) = p.status {
-                    parts.push(s);
-                }
-                if p.builds.1 > 0 {
-                    parts.push(format!("builds {}/{}", p.builds.0, p.builds.1));
-                }
-                if p.downloads.1 > 0 {
-                    parts.push(format!("downloads {}/{}", p.downloads.0, p.downloads.1));
-                }
-                self.set_statustext(parts.join(" — "));
+                self.set_statustext(p.label());
             }
             RebuildMsg::SetCancellable(c) => {
                 self.set_cancellable(c);

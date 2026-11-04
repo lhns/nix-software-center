@@ -7,6 +7,7 @@ pub mod installworker;
 pub mod pkgpage;
 pub mod pkgtile;
 pub mod preferencespage;
+pub mod queuepanel;
 pub mod rebuild;
 pub mod screenshotfactory;
 pub mod searchpage;

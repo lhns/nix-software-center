@@ -40,6 +40,7 @@ use super::{
     pkgpage::{self, InstallType, PkgInitModel, PkgModel, PkgMsg, WorkPkg},
     pkgtile::PkgTile,
     preferencespage::{PreferencesPageModel, PreferencesPageMsg},
+    queuepanel::{QueuePanelModel, QueuePanelMsg},
     rebuild::RebuildModel,
     searchpage::{SearchItem, SearchPageModel, SearchPageMsg},
     unavailabledialog::UnavailableItemModel,
@@ -50,6 +51,8 @@ use super::{
 };
 
 pub static REBUILD_BROKER: MessageBroker<RebuildMsg> = MessageBroker::new();
+pub static PKGPAGE_BROKER: MessageBroker<PkgMsg> = MessageBroker::new();
+pub static QUEUE_PANEL_BROKER: MessageBroker<QueuePanelMsg> = MessageBroker::new();
 
 #[derive(PartialEq)]
 enum Page {
@@ -131,6 +134,8 @@ pub struct AppModel {
     installedpagebusy: Vec<(String, InstallType)>,
     #[tracker::no_eq]
     rebuild: Controller<RebuildModel>,
+    #[tracker::no_eq]
+    queuepanel: Controller<QueuePanelModel>,
     #[tracker::no_eq]
     welcomepage: Controller<WelcomeModel>,
     online: bool,
@@ -238,8 +243,11 @@ impl Component for AppModel {
                     }
                 }
             } else {
+                gtk::Box {
+                set_orientation: gtk::Orientation::Vertical,
                 #[name(main_leaf)]
                 adw::Leaflet {
+                    set_vexpand: true,
                     set_can_unfold: false,
                     set_homogeneous: false,
                     set_transition_type: adw::LeafletTransitionType::Over,
@@ -375,6 +383,8 @@ impl Component for AppModel {
                         append: model.categorypage.widget(),
                     },
                     append: model.pkgpage.widget()
+                },
+                append: model.queuepanel.widget(),
                 }
             }
         }
@@ -495,12 +505,12 @@ impl Component for AppModel {
             .launch(root.clone().upcast())
             .forward(sender.input_sender(), identity);
         let pkgpage = PkgModel::builder()
-            .launch(PkgPageInit {
+            .launch_with_broker(PkgPageInit {
                 userpkgs: userpkgtype.clone(),
                 syspkgs: syspkgtype.clone(),
                 config: config.clone(),
                 online,
-            })
+            }, &PKGPAGE_BROKER)
             .forward(sender.input_sender(), identity);
         let searchpage = SearchPageModel::builder()
             .launch(())
@@ -523,6 +533,9 @@ impl Component for AppModel {
         let rebuild = RebuildModel::builder()
             .launch_with_broker(root.clone().upcast(), &REBUILD_BROKER)
             .forward(sender.input_sender(), identity);
+        let queuepanel = QueuePanelModel::builder()
+            .launch_with_broker((), &QUEUE_PANEL_BROKER)
+            .detach();
         let viewstack = adw::ViewStack::new();
         let welcomepage = WelcomeModel::builder()
             .launch(root.clone().upcast())
@@ -566,6 +579,7 @@ impl Component for AppModel {
             viewstack,
             installedpagebusy: vec![],
             rebuild,
+            queuepanel,
             welcomepage,
             aboutpage,
             preferencespage,

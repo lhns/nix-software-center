@@ -124,14 +124,8 @@ impl Worker for InstallAsyncHandler {
                                         }
                                     }));
                                 }
-                                UserPkgs::Profile => {
-                                    REBUILD_BROKER.send(RebuildMsg::Show);
-                                    let op = userops::Op::begin();
-                                    self.process = Some(relm4::spawn(async move {
-                                        let ok = userops::add(&op, &work.pkg).await;
-                                        finish(&sender, work, ok);
-                                    }));
-                                }
+                                // Profile operations run in userops' queue, not here.
+                                UserPkgs::Profile => warn!("profile operation reached the worker: {}", work.pkg),
                             }
                         }
                         PkgAction::Remove => {
@@ -178,14 +172,8 @@ impl Worker for InstallAsyncHandler {
                                         }
                                     }));
                                 }
-                                UserPkgs::Profile => {
-                                    REBUILD_BROKER.send(RebuildMsg::Show);
-                                    let op = userops::Op::begin();
-                                    self.process = Some(relm4::spawn(async move {
-                                        let ok = userops::remove(&op, &work.pkg).await;
-                                        finish(&sender, work, ok);
-                                    }));
-                                }
+                                // Profile operations run in userops' queue, not here.
+                                UserPkgs::Profile => warn!("profile operation reached the worker: {}", work.pkg),
                             }
                         }
                     },
@@ -269,17 +257,6 @@ impl Worker for InstallAsyncHandler {
             }
             InstallAsyncHandlerMsg::SetPid(p) => self.pid = p,
         }
-    }
-}
-
-/// Ends a profile operation in the dialog and in the package page's queue.
-fn finish(sender: &ComponentSender<InstallAsyncHandler>, work: WorkPkg, ok: bool) {
-    if ok {
-        REBUILD_BROKER.send(RebuildMsg::FinishSuccess);
-        sender.output(PkgMsg::FinishedProcess(work));
-    } else {
-        REBUILD_BROKER.send(RebuildMsg::FinishError(None));
-        sender.output(PkgMsg::FailedProcess(work));
     }
 }
 
