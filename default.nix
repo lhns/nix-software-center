@@ -6,6 +6,13 @@
   pkgdb ? null,
   # URL the app checks before installs; "" disables the check (NSC_ONLINE_CHECK_URL).
   onlineCheckUrl ? null,
+  # false: image-based desktop without NixOS configuration or system packages; the window then
+  # holds only the package sources (NSC_SYSTEM_PACKAGES=0).
+  systemPackages ? true,
+  # Flake that installs unfree apps (NSC_UNFREE_FLAKE); null keeps the app's default.
+  unfreeFlake ? null,
+  # Whether "nixpkgs unfree" is listed until the user toggles it (NSC_UNFREE_LISTED_DEFAULT); null = yes.
+  unfreeListedDefault ? null,
 }:
 pkgs.stdenv.mkDerivation {
   pname = "nix-software-center";
@@ -69,6 +76,15 @@ pkgs.stdenv.mkDerivation {
     ''
     + lib.optionalString (onlineCheckUrl != null) ''
       gappsWrapperArgs+=(--set-default NSC_ONLINE_CHECK_URL ${lib.escapeShellArg onlineCheckUrl})
+    ''
+    + lib.optionalString (!systemPackages) ''
+      gappsWrapperArgs+=(--set-default NSC_SYSTEM_PACKAGES 0)
+    ''
+    + lib.optionalString (unfreeFlake != null) ''
+      gappsWrapperArgs+=(--set-default NSC_UNFREE_FLAKE ${lib.escapeShellArg unfreeFlake})
+    ''
+    + lib.optionalString (unfreeListedDefault != null) ''
+      gappsWrapperArgs+=(--set-default NSC_UNFREE_LISTED_DEFAULT ${if unfreeListedDefault then "1" else "0"})
     '';
 
   postInstall = ''

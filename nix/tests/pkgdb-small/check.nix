@@ -20,17 +20,17 @@ runCommand "pkgdb-small-check" { nativeBuildInputs = [ sqlite ]; } ''
   }
 
   eq "attributes" "SELECT group_concat(attribute, ' ') FROM (SELECT attribute FROM pkgs ORDER BY 1)" \
-    "audioPkgs.synth awkward broken-thing hello list-homepage minimal vulnerable"
-  eq "meta rows match pkgs" "SELECT count(*) FROM meta JOIN pkgs USING (attribute)" 7
+    "audioPkgs.synth awkward broken-thing hello list-homepage minimal unfree-thing vulnerable"
+  eq "meta rows match pkgs" "SELECT count(*) FROM meta JOIN pkgs USING (attribute)" 8
   eq "pkgs columns" "SELECT group_concat(name) FROM pragma_table_info('pkgs')" "attribute,pname,version,system"
   eq "meta columns" "SELECT group_concat(name) FROM pragma_table_info('meta')" \
-    "attribute,description,longdescription,homepage,license,platforms,maintainers,position,broken,insecure"
+    "attribute,description,longdescription,homepage,license,platforms,maintainers,position,broken,insecure,unfree"
   eq "pname index" "SELECT count(*) FROM pragma_index_list('pkgs') WHERE name = 'pkgs_pname'" 1
   eq "no NULL or non-text" "SELECT count(*) FROM pkgs JOIN meta USING (attribute)
     WHERE typeof(pname) != 'text' OR typeof(version) != 'text' OR typeof(system) != 'text'
     OR typeof(description) != 'text' OR typeof(longdescription) != 'text' OR typeof(homepage) != 'text'
     OR typeof(license) != 'text' OR typeof(platforms) != 'text' OR typeof(maintainers) != 'text'
-    OR typeof(position) != 'text' OR typeof(broken) != 'integer' OR typeof(insecure) != 'integer'" 0
+    OR typeof(position) != 'text' OR typeof(broken) != 'integer' OR typeof(insecure) != 'integer' OR typeof(unfree) != 'integer'" 0
   eq "pname/version" "SELECT pname || ' ' || version FROM pkgs WHERE attribute = 'hello'" "hello 1.0"
   eq "system" "SELECT system FROM pkgs WHERE attribute = 'hello'" "${pkgdb.system}"
   eq "relative position" "SELECT position FROM meta WHERE attribute = 'audioPkgs.synth'" \
@@ -41,6 +41,8 @@ runCommand "pkgdb-small-check" { nativeBuildInputs = [ sqlite ]; } ''
   eq "string homepage" "SELECT homepage FROM meta WHERE attribute = 'hello'" "https://example.org/hello"
   eq "broken" "SELECT group_concat(attribute) FROM meta WHERE broken = 1" "broken-thing"
   eq "insecure" "SELECT group_concat(attribute) FROM meta WHERE insecure = 1" "vulnerable"
+  eq "unfree" "SELECT group_concat(attribute) FROM meta WHERE unfree = 1" "unfree-thing"
+  eq "catalogue version" "SELECT value FROM info WHERE key = 'nsc-catalogue-version'" 1
   eq "license json" "SELECT json_extract(license, '\$.spdxId') FROM meta WHERE attribute = 'hello'" "MIT"
   eq "platforms trimmed" "SELECT count(*) FROM meta WHERE length(platforms) > 0" 0
   eq "maintainers json" "SELECT json_extract(maintainers, '\$[0].github') FROM meta WHERE attribute = 'hello'" "jane"
