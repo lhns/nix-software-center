@@ -1,7 +1,7 @@
 use nsc_backend::queue::{Action::*, *};
 
 fn it(key: &str, action: Action) -> Item<()> {
-    Item { key: key.into(), action, payload: () }
+    Item { id: 0, key: key.into(), action, payload: () }
 }
 
 fn keys(b: &Batch<()>) -> Vec<&str> {
