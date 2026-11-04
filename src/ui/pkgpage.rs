@@ -27,6 +27,7 @@ use crate::parse::util;
 
 use super::{activitylog::LogMsg, sourceinfo, userops, window::ACTIVITYLOG_BROKER};
 use super::window::SystemPkgs;
+use super::included;
 use super::window::UserPkgs;
 use super::{screenshotfactory::ScreenshotItem, window::AppMsg};
 
@@ -386,6 +387,27 @@ impl Component for PkgModel {
                                                                     sender.input(PkgMsg::RemoveUser)
                                                                 }
                                                             }
+                                                        }
+                                                    } else if included::shown(&model.pkg, false) {
+                                                        gtk::Box {
+                                                            set_halign: gtk::Align::End,
+                                                            set_valign: gtk::Align::Center,
+                                                            set_spacing: 10,
+                                                            gtk::Label {
+                                                                add_css_class: "dim-label",
+                                                                set_label: "Included with desktop",
+                                                            },
+                                                            gtk::Button {
+                                                                add_css_class: "suggested-action",
+                                                                set_valign: gtk::Align::Center,
+                                                                set_can_focus: false,
+                                                                set_label: "Open",
+                                                                #[watch]
+                                                                set_visible: model.launchable.is_some(),
+                                                                connect_clicked[sender] => move |_| {
+                                                                    sender.input(PkgMsg::Launch)
+                                                                }
+                                                            },
                                                         }
                                                     // } else if !model.installinguserpkgs.is_empty() {
                                                     //     gtk::Box {

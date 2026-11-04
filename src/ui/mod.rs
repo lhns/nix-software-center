@@ -4,6 +4,7 @@ pub mod activitypage;
 pub mod categories;
 pub mod categorypage;
 pub mod categorytile;
+pub mod included;
 pub mod installedpage;
 pub mod jobs;
 pub mod pkgpage;
