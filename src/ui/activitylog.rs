@@ -98,12 +98,6 @@ impl SimpleComponent for ActivityLogModel {
         scrim.add_css_class("nsc-scrim");
         scrim.set_hexpand(true);
         scrim.set_vexpand(true);
-        let click = gtk::GestureClick::new();
-        {
-            let sender = sender.clone();
-            click.connect_released(move |_, _, _, _| sender.input(LogMsg::Hide));
-        }
-        scrim.add_controller(click);
         root.set_child(Some(&scrim));
 
         let title = adw::WindowTitle::new("", "");
@@ -216,10 +210,24 @@ impl SimpleComponent for ActivityLogModel {
         clamp.set_margin_bottom(24);
         clamp.set_margin_start(24);
         clamp.set_margin_end(24);
-        // The empty sides of the clamp belong to the scrim underneath.
-        clamp.set_can_target(false);
         clamp.set_child(Some(&card));
         root.add_overlay(&clamp);
+        // A click outside the card hides: the scrim, or the empty sides of the clamp.
+        let click = gtk::GestureClick::new();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        {
+            let card: gtk::Widget = card.clone().upcast();
+            let (sender, root) = (sender.clone(), root.clone());
+            click.connect_released(move |_, _, x, y| {
+                let inside = root
+                    .pick(x, y, gtk::PickFlags::DEFAULT)
+                    .map_or(false, |w| w == card || w.is_ancestor(&card));
+                if !inside {
+                    sender.input(LogMsg::Hide);
+                }
+            });
+        }
+        root.add_controller(click);
 
         let model = ActivityLogModel {
             root: root.clone(),
