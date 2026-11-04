@@ -155,9 +155,8 @@ impl SimpleComponent for PreferencesPageModel {
                     add = &adw::EntryRow {
                         #[watch]
                         set_visible: model.flake.is_some(),
+                        set_use_markup: false,
                         set_title: "Flake arguments (--flake path/to/flake.nix#<THIS ENTRY>)",
-                        set_use_markup: false,
-                        set_use_markup: false,
                         connect_changed[sender] => move |x| {
                             sender.input(PreferencesPageMsg::SetFlakeArg({
                                 let text = x.text().to_string();

@@ -59,6 +59,13 @@ pub async fn installed_versions(pkgdb_path: &str) -> Result<HashMap<String, Stri
         out.entry(pkg.key)
             .or_insert_with(|| dbversion.or(pkg.store_version).unwrap_or_default());
     }
+    if std::env::var_os("NSC_UI_TEST").is_some() {
+        // Screenshot fixtures: an unfree app, and one whose source is gone.
+        let gone = "github:gone/src#packages.x86_64-linux.gone".to_string();
+        out.insert("unfree-thing".to_string(), "1.0".to_string());
+        out.insert(gone.clone(), "2.0".to_string());
+        super::sourceinfo::set_removed([gone].into_iter().collect());
+    }
     Ok(out)
 }
 

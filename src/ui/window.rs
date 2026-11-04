@@ -950,6 +950,23 @@ impl Component for AppModel {
                                     }),
                                     installedsystem: installedsystem.contains(&pkg),
                                 })
+                            } else if let Ok((pname, description)) = sqlx::query_as::<_, (String, String)>(
+                                "SELECT pname, description FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = $1",
+                            )
+                            .bind(&pkg)
+                            .fetch_one(pool)
+                            .await
+                            {
+                                // Not in AppStream (third-party apps): the catalogue is all there is.
+                                pkgtiles.push(PkgTile {
+                                    pkg: pkg.to_string(),
+                                    name: pname.clone(),
+                                    pname,
+                                    icon: None,
+                                    summary: description,
+                                    installeduser: installeduser.contains_key(&pkg),
+                                    installedsystem: installedsystem.contains(&pkg),
+                                })
                             }
                         }
                     }

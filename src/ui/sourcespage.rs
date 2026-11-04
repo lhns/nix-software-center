@@ -21,10 +21,10 @@ pub struct SourcesGroup {
     on_change: Box<dyn Fn()>,
 }
 
-/// First line of an error, cut to a readable length.
+/// An error on one line, cut to a readable length.
 fn short(e: &str) -> String {
-    let line = e.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(e).trim();
-    line.chars().take(240).collect()
+    let joined = e.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" | ");
+    joined.chars().take(240).collect()
 }
 
 fn time_text(t: std::time::SystemTime) -> String {
@@ -121,7 +121,7 @@ impl SourcesGroup {
         row.set_subtitle(&format!("{}\n{}", src.flake, status));
         row.set_subtitle_lines(0);
         if failed {
-            row.add_css_class("error");
+            row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
         }
         if !src.builtin {
             let remove = gtk::Button::from_icon_name("user-trash-symbolic");
