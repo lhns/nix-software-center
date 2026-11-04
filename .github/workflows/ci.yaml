@@ -31,6 +31,15 @@ jobs:
         run: |
           smoke=$(readlink -f result)/libexec/nix-software-center/nsc-backend-smoke
           HOME=$(mktemp -d) "$smoke" nixpkgs#hello --require-progress
+      # The default unfree flake ships without a lock: it must resolve and install unfree apps with
+      # no --impure on a fresh profile (the commit under test, not the default branch).
+      - name: unfree flake without a lock
+        run: |
+          nix --version
+          sha=${{ github.event.pull_request.head.sha || github.sha }}
+          export HOME=$(mktemp -d)
+          nix profile add "github:${{ github.repository }}/$sha?dir=nix/unfree#hello-unfree" -L
+          nix profile list | grep -q hello-unfree
       - name: devShell evaluates
         run: nix eval .#devShell.${{ matrix.system }}.drvPath
       - name: build appstream data
