@@ -307,6 +307,11 @@ impl ActivityLogModel {
         };
         self.show(&entry);
         self.append_new(entry.id);
+        if self.follow.get() {
+            // Also without new lines: the first scroll can come before the view has a size.
+            // scroll_to_mark waits for the text to be laid out, unlike setting the adjustment.
+            self.view.scroll_to_mark(&self.end, 0.0, false, 0.0, 1.0);
+        }
         if entry.state == EntryState::Running && !self.ticking.get() {
             self.ticking.set(true);
             let ticking = self.ticking.clone();
@@ -376,10 +381,6 @@ impl ActivityLogModel {
             let mut from = self.buffer.start_iter();
             let mut to = self.buffer.iter_at_line(excess).unwrap_or_else(|| self.buffer.end_iter());
             self.buffer.delete(&mut from, &mut to);
-        }
-        if self.follow.get() {
-            // Waits for the text to be laid out, unlike setting the adjustment.
-            self.view.scroll_to_mark(&self.end, 0.0, false, 0.0, 1.0);
         }
     }
 }
