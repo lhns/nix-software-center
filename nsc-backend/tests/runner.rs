@@ -293,3 +293,15 @@ async fn detect_reads_the_version() {
     let s = script(dir.path(), "nix", "echo 'nix (Nix) 2.34.9'");
     assert_eq!(Nix::detect_at(s).await.version, Some((2, 34)));
 }
+
+#[tokio::test]
+async fn add_many_is_one_command_and_empty_runs_nothing() {
+    let _g = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let nix = Nix::new(fake_nix(dir.path()));
+    let c = Cancel::new();
+    let pkgs = ["nixpkgs#a".to_string(), "nixpkgs#b".to_string()];
+    assert!(ops::add_many(&nix, &pkgs, &c, |_| {}).await.unwrap());
+    assert!(ops::add_many(&nix, &[], &c, |_| {}).await.unwrap());
+    assert_eq!(read(dir.path(), "argv.log"), "profile add nixpkgs#a nixpkgs#b --impure\n");
+}

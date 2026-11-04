@@ -32,10 +32,12 @@ echo "installed $3"
     assert!(lines.contains(&Event::Line(nsc_backend::run::Stream::Stdout, "installed nixpkgs#hello".into())));
 
     assert!(ops::add(&nix, "nixpkgs#jq", &c, |_| {}).await.unwrap());
+    let both = ["nixpkgs#a".to_string(), "nixpkgs#b".to_string()];
+    assert!(ops::add_many(&nix, &both, &c, |_| {}).await.unwrap());
     let log = std::fs::read_to_string(dir.path().join("argv.log")).unwrap();
     assert_eq!(
         log,
-        "profile add nixpkgs#hello --impure\nprofile install nixpkgs#hello --impure\nprofile install nixpkgs#jq --impure\n"
+        "profile add nixpkgs#hello --impure\nprofile install nixpkgs#hello --impure\nprofile install nixpkgs#jq --impure\nprofile install nixpkgs#a nixpkgs#b --impure\n"
     );
 
     // Any other failure is reported as is, with a single attempt.

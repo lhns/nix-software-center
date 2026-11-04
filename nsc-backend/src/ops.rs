@@ -104,10 +104,25 @@ pub async fn add(
     nix: &Nix,
     installable: &str,
     cancel: &Cancel,
+    on_event: impl FnMut(Event) + Send,
+) -> Result<bool> {
+    add_many(nix, &[installable.to_string()], cancel, on_event).await
+}
+
+/// One `nix profile add a b c --impure` for all installables: Nix commits the
+/// whole command or none of it.
+pub async fn add_many(
+    nix: &Nix,
+    installables: &[String],
+    cancel: &Cancel,
     mut on_event: impl FnMut(Event) + Send,
 ) -> Result<bool> {
+    if installables.is_empty() {
+        return Ok(true);
+    }
     let _lock = run::lock().await;
-    let rest = [installable.to_string(), "--impure".to_string()];
+    let mut rest = installables.to_vec();
+    rest.push("--impure".to_string());
     let verb = if USE_INSTALL.load(Ordering::Relaxed) { "install" } else { "add" };
     let (ok, unknown) = nix_run(
         nix,
@@ -143,6 +158,7 @@ async fn selectors(nix: &Nix, names: &[String]) -> Result<Vec<String>> {
         .collect()
 }
 
+/// One `nix profile remove a b` for all `names`.
 pub async fn remove(
     nix: &Nix,
     names: &[String],

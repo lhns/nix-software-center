@@ -126,3 +126,16 @@ fn nested_builds_are_not_top_level() {
     feed(&mut tree, &stream);
     assert_eq!(tree.summary().builds, (1, 2));
 }
+
+#[test]
+fn label_says_evaluating_until_totals_arrive() {
+    use nsc_backend::progress::Summary;
+    let mut s = Summary::default();
+    assert_eq!(s.label(), "Evaluating…");
+    s.status = Some("evaluating 'x'".into());
+    assert_eq!(s.label(), "Evaluating… — evaluating 'x'");
+    s.fraction = Some(0.5);
+    s.builds = (1, 2);
+    s.downloads = (0, 3);
+    assert_eq!(s.label(), "evaluating 'x' — builds 1/2 — downloads 0/3");
+}

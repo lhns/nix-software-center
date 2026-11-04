@@ -86,6 +86,27 @@ pub struct Summary {
     pub stopped: u64,
 }
 
+impl Summary {
+    /// One-line status. Until Nix reports expected work it is evaluating, which
+    /// can take a while and has no numbers to show.
+    pub fn label(&self) -> String {
+        let mut parts = vec![];
+        if self.fraction.is_none() {
+            parts.push("Evaluating…".to_string());
+        }
+        if let Some(s) = &self.status {
+            parts.push(s.clone());
+        }
+        if self.builds.1 > 0 {
+            parts.push(format!("builds {}/{}", self.builds.0, self.builds.1));
+        }
+        if self.downloads.1 > 0 {
+            parts.push(format!("downloads {}/{}", self.downloads.0, self.downloads.1));
+        }
+        parts.join(" — ")
+    }
+}
+
 #[derive(Debug)]
 struct Activity {
     parent: u64,
