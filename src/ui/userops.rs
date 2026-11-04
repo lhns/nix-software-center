@@ -1,16 +1,23 @@
-//! Profile-mode user operations on top of `nsc-backend`, shown in the rebuild dialog.
+//! Profile-mode user operations on top of `nsc-backend`. Upgrades show in the
+//! rebuild dialog; installs and removals go through the app-wide queue and its panel.
 
-use super::{rebuild::RebuildMsg, window::REBUILD_BROKER};
+use super::{
+    pkgpage::{PkgAction, PkgMsg, WorkPkg},
+    queuepanel::QueuePanelMsg,
+    rebuild::RebuildMsg,
+    window::{PKGPAGE_BROKER, QUEUE_PANEL_BROKER, REBUILD_BROKER},
+};
 use anyhow::{bail, Result};
 use log::*;
 use nsc_backend::{
     ops::{self, Nix},
     pkgdb::{self, Unavailable},
     profile,
+    queue::{self, Action, BatchResult, Item, Queue, Status},
     run::{Cancel, Event},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -126,16 +133,207 @@ fn done(r: Result<bool>) -> bool {
     }
 }
 
-pub async fn add(op: &Op, attr: &str) -> bool {
-    done(ops::add(nix().await, &format!("nixpkgs#{attr}"), &op.cancel, show).await)
+/// The queue and the cancel handle of its running batch, under one lock so a
+/// cancel can neither miss a batch that just started nor hit the next one.
+#[derive(Default)]
+struct QueueState {
+    queue: Queue<WorkPkg>,
+    cancel: Option<Cancel>,
 }
 
-pub async fn remove(op: &Op, key: &str) -> bool {
-    done(async {
-        let names = element_names(&[key.to_string()]).await?;
-        ops::remove(nix().await, &names, &op.cancel, show).await
+static QUEUE: Mutex<Option<QueueState>> = Mutex::new(None);
+
+fn with_state<R>(f: impl FnOnce(&mut QueueState) -> R) -> R {
+    f(QUEUE.lock().unwrap().get_or_insert_with(Default::default))
+}
+
+fn with_queue<R>(f: impl FnOnce(&mut Queue<WorkPkg>) -> R) -> R {
+    with_state(|s| f(&mut s.queue))
+}
+
+fn action_of(a: &PkgAction) -> Action {
+    match a {
+        PkgAction::Install => Action::Install,
+        PkgAction::Remove => Action::Remove,
     }
-    .await)
+}
+
+fn changed() {
+    QUEUE_PANEL_BROKER.send(QueuePanelMsg::Refresh);
+    PKGPAGE_BROKER.send(PkgMsg::QueueChanged);
+}
+
+/// Queues a profile install or removal for the package `work.pkg`. False when
+/// the same action for it is already queued or running.
+pub fn enqueue(work: WorkPkg) -> bool {
+    let item = Item {
+        key: work.pkg.clone(),
+        action: action_of(&work.action),
+        payload: work,
+    };
+    let (added, spawn) = with_queue(|q| {
+        let added = q.enqueue(item);
+        (added, added && q.claim_runner())
+    });
+    if added {
+        changed();
+    }
+    if spawn {
+        relm4::spawn(run_queue());
+    }
+    added
+}
+
+/// What the package's page shows while it is in the queue.
+pub fn state_label(key: &str) -> Option<&'static str> {
+    with_queue(|q| q.key_status(key)).map(|s| match s {
+        (Action::Install, Status::Queued) => "Queued",
+        (Action::Install, Status::Running) => "Installing…",
+        (Action::Remove, Status::Queued) => "Removal queued",
+        (Action::Remove, Status::Running) => "Removing…",
+    })
+}
+
+/// Drops the queued items for `key` (returned, to clear their busy marks) or,
+/// when it is part of the running batch, cancels that batch.
+pub fn cancel_item(key: &str) -> Vec<WorkPkg> {
+    let gone = with_state(|s| {
+        let gone = s.queue.cancel_queued(key);
+        if gone.is_empty() && matches!(s.queue.key_status(key), Some((_, Status::Running))) {
+            if let Some(c) = &s.cancel {
+                c.cancel();
+            }
+        }
+        gone
+    });
+    if !gone.is_empty() {
+        changed();
+    }
+    gone.into_iter().map(|i| i.payload).collect()
+}
+
+/// Cancels the running batch; its items are reported as cancelled, not retried.
+pub fn cancel_queue_batch() {
+    if let Some(c) = &with_state(|s| s.cancel.clone()) {
+        c.cancel();
+    }
+}
+
+pub struct Snapshot {
+    /// The running batch, e.g. "Installing hello, jq"; `None` when idle.
+    pub title: Option<String>,
+    pub waiting: usize,
+}
+
+pub fn snapshot() -> Snapshot {
+    with_queue(|q| Snapshot {
+        title: q.running().map(|b| {
+            let names: Vec<_> = b
+                .items
+                .iter()
+                .map(|i| if i.payload.pname.is_empty() { i.key.as_str() } else { i.payload.pname.as_str() })
+                .collect();
+            let what = match b.action {
+                Action::Install => "Installing",
+                Action::Remove => "Removing",
+            };
+            match names[..] {
+                [one] if b.retry => format!("{what} {one} on its own"),
+                [one] => format!("{what} {one}"),
+                _ if names.len() <= 3 => format!("{what} {}", names.join(", ")),
+                _ => format!("{what} {} packages", names.len()),
+            }
+        }),
+        waiting: q.waiting(),
+    })
+}
+
+/// Runs batches until the queue is empty. Every failure is reported and the
+/// loop goes on.
+async fn run_queue() {
+    let nix = nix().await;
+    loop {
+        let cancel = Cancel::new();
+        let Some(batch) = with_state(|s| {
+            let batch = s.queue.start();
+            s.cancel = batch.as_ref().map(|_| cancel.clone());
+            batch
+        }) else {
+            break;
+        };
+        QUEUE_PANEL_BROKER.send(QueuePanelMsg::Progress(Default::default()));
+        changed();
+
+        let result = run_batch(nix, &batch, &cancel).await;
+        let outcomes = with_state(|s| {
+            s.cancel = None;
+            s.queue.complete(result)
+        });
+
+        let mut failures = vec![];
+        for o in &outcomes {
+            let ok = o.result.is_ok();
+            if let Err(text) = &o.result {
+                if !cancel.is_cancelled() {
+                    let what = match o.item.action {
+                        Action::Install => "Installing",
+                        Action::Remove => "Removing",
+                    };
+                    failures.push((format!("{what} {} failed", o.item.key), text.clone()));
+                }
+            }
+            PKGPAGE_BROKER.send(PkgMsg::ProfileFinished(o.item.payload.clone(), ok));
+        }
+        if !failures.is_empty() {
+            QUEUE_PANEL_BROKER.send(QueuePanelMsg::AddFailures(failures));
+        }
+        if !outcomes.is_empty() {
+            // One refresh per command, not per package.
+            PKGPAGE_BROKER.send(PkgMsg::ProfileBatchDone);
+        }
+        changed();
+    }
+    changed();
+}
+
+/// Longest output line kept for the panel's failure text.
+const MAX_LINE: usize = 1000;
+
+async fn run_batch(nix: &Nix, batch: &queue::Batch<WorkPkg>, cancel: &Cancel) -> BatchResult {
+    let mut tail: VecDeque<String> = VecDeque::new();
+    let mut sink = |e: Event| match e {
+        Event::Line(_, line) => {
+            if tail.len() == 12 {
+                tail.pop_front();
+            }
+            tail.push_back(line.chars().take(MAX_LINE).collect());
+        }
+        Event::Progress(s) => QUEUE_PANEL_BROKER.send(QueuePanelMsg::Progress(s)),
+    };
+    let keys = batch.keys();
+    let res = match batch.action {
+        Action::Install => {
+            let installables: Vec<String> = keys.iter().map(|k| format!("nixpkgs#{k}")).collect();
+            ops::add_many(nix, &installables, cancel, &mut sink).await
+        }
+        Action::Remove => match element_names(&keys).await {
+            Ok(names) => ops::remove(nix, &names, cancel, &mut sink).await,
+            Err(e) => Err(e),
+        },
+    };
+    match res {
+        Ok(true) => BatchResult::Done,
+        _ if cancel.is_cancelled() => BatchResult::Cancelled,
+        Ok(false) => {
+            let text = tail.iter().cloned().collect::<Vec<_>>().join("
+");
+            BatchResult::Failed(if text.is_empty() { "nix exited with an error".into() } else { text })
+        }
+        Err(e) => {
+            warn!("Profile operation failed: {}", e);
+            BatchResult::Failed(e.to_string())
+        }
+    }
 }
 
 /// Upgrades everything, after removing the entries behind `remove_first`.

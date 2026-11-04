@@ -195,9 +195,9 @@ impl SimpleComponent for RebuildModel {
             Some(f) => progressbar.set_fraction(f),
             None => progressbar.pulse(),
         }
-        if let Some(end) = model.buffer.mark("end") {
-            outview.scroll_to_mark(&end, 0.0, false, 0.0, 0.0);
-        }
+        // Follow new lines vertically only; scroll_to_mark would also move the horizontal position.
+        let vadj = scrollwindow.vadjustment();
+        vadj.set_value(vadj.upper() - vadj.page_size());
         if model.status != RebuildStatus::Building {
             scrollwindow.hadjustment().set_value(0.0);
         }
@@ -249,17 +249,7 @@ impl SimpleComponent for RebuildModel {
             }
             RebuildMsg::Progress(p) => {
                 self.set_fraction(p.fraction);
-                let mut parts = vec![];
-                if let Some(s) = p.status {
-                    parts.push(s);
-                }
-                if p.builds.1 > 0 {
-                    parts.push(format!("builds {}/{}", p.builds.0, p.builds.1));
-                }
-                if p.downloads.1 > 0 {
-                    parts.push(format!("downloads {}/{}", p.downloads.0, p.downloads.1));
-                }
-                self.set_statustext(parts.join(" — "));
+                self.set_statustext(p.label());
             }
             RebuildMsg::SetCancellable(c) => {
                 self.set_cancellable(c);
@@ -289,6 +279,8 @@ impl SimpleComponent for RebuildModel {
     }
 }
 
+const MAX_LINES: i32 = 5000;
+
 impl RebuildModel {
     /// One line at the end of the buffer.
     fn append(&self, line: &str) {
@@ -297,6 +289,13 @@ impl RebuildModel {
             self.buffer.insert(&mut end, "\n");
         }
         self.buffer.insert(&mut end, line);
+        // Bounded: a long build can print without end.
+        let excess = self.buffer.line_count() - MAX_LINES;
+        if excess > 0 {
+            let mut from = self.buffer.start_iter();
+            let mut to = self.buffer.iter_at_line(excess).unwrap_or_else(|| self.buffer.end_iter());
+            self.buffer.delete(&mut from, &mut to);
+        }
         trace!("APPENDED: {}", line);
     }
 }

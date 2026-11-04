@@ -28,6 +28,7 @@ use crate::parse::util;
 use crate::ui::installworker::InstallAsyncHandlerMsg;
 
 use super::installworker::InstallAsyncHandler;
+use super::userops;
 use super::installworker::InstallAsyncHandlerInit;
 use super::window::SystemPkgs;
 use super::window::UserPkgs;
@@ -160,7 +161,13 @@ pub enum PkgMsg {
     NixShell,
     SetInstallType(InstallType),
     AddToQueue(WorkPkg),
-    UpdateOnline(bool)
+    UpdateOnline(bool),
+    /// The app-wide install queue changed: redraw the queue state.
+    QueueChanged,
+    /// A queued profile operation ended; `true` on success.
+    ProfileFinished(WorkPkg, bool),
+    /// A profile command ended: refresh the installed list once.
+    ProfileBatchDone,
 }
 
 #[derive(Debug)]
@@ -321,7 +328,7 @@ impl Component for PkgModel {
                                             InstallType::User => {
                                                 gtk::Box {
                                                     #[name(userinstallstack)]
-                                                    if model.workqueue.iter().any(|x| x.pkg == model.pkg && x.pkgtype == InstallType::User) /*model.installinguserpkgs.contains(&model.pkg)*/ {
+                                                    if model.workqueue.iter().any(|x| x.pkg == model.pkg && x.pkgtype == InstallType::User) || (model.userpkgtype == UserPkgs::Profile && userops::state_label(&model.pkg).is_some()) {
                                                         gtk::Box {
                                                             gtk::Spinner {
                                                                 set_halign: gtk::Align::End,
@@ -329,6 +336,12 @@ impl Component for PkgModel {
                                                                 set_spinning: true, //model.installinguserpkgs.contains(&model.pkg),
                                                                 set_size_request: (32, 32),
                                                                 set_can_focus: false,
+                                                            },
+                                                            gtk::Label {
+                                                                set_valign: gtk::Align::Center,
+                                                                add_css_class: "dim-label",
+                                                                #[watch]
+                                                                set_label: userops::state_label(&model.pkg).unwrap_or(""),
                                                             },
                                                             gtk::Button {
                                                                 set_halign: gtk::Align::End,
@@ -1192,7 +1205,8 @@ impl Component for PkgModel {
                     let mut pango = html2pango::markup_html(&input)
                         .unwrap_or_else(|_| {
                             warn!("Pango failed to parse description");
-                            input.to_string()
+                            // Goes to set_markup: unparsed text must not be read as markup.
+                            gtk::glib::markup_escape_text(&input).to_string()
                         })
                         .trim()
                         .to_string();
@@ -1373,10 +1387,7 @@ impl Component for PkgModel {
                     block: false,
                     notify: None,
                 };
-                self.workqueue.insert(w.clone());
-                if self.workqueue.len() == 1 {
-                    self.installworker.emit(InstallAsyncHandlerMsg::Process(w));
-                }
+                self.queue_work(w, &sender);
             }
             PkgMsg::RemoveUser => {
                 let w = WorkPkg {
@@ -1387,10 +1398,7 @@ impl Component for PkgModel {
                     block: false,
                     notify: None,
                 };
-                self.workqueue.insert(w.clone());
-                if self.workqueue.len() == 1 {
-                    self.installworker.emit(InstallAsyncHandlerMsg::Process(w));
-                }
+                self.queue_work(w, &sender);
             }
             PkgMsg::InstallSystem => {
                 let online = util::checkonline();
@@ -1407,10 +1415,7 @@ impl Component for PkgModel {
                     block: false,
                     notify: None,
                 };
-                self.workqueue.insert(w.clone());
-                if self.workqueue.len() == 1 {
-                    self.installworker.emit(InstallAsyncHandlerMsg::Process(w));
-                }
+                self.queue_work(w, &sender);
             }
             PkgMsg::RemoveSystem => {
                 let w = WorkPkg {
@@ -1421,10 +1426,7 @@ impl Component for PkgModel {
                     block: false,
                     notify: None,
                 };
-                self.workqueue.insert(w.clone());
-                if self.workqueue.len() == 1 {
-                    self.installworker.emit(InstallAsyncHandlerMsg::Process(w));
-                }
+                self.queue_work(w, &sender);
             }
             PkgMsg::FinishedProcess(work) => {
                 let _ = nix_data::utils::refreshicons();
@@ -1499,6 +1501,16 @@ impl Component for PkgModel {
                 }
             }
             PkgMsg::Cancel => {
+                if self.userpkgtype == UserPkgs::Profile {
+                    let dropped = userops::cancel_item(&self.pkg);
+                    let running = userops::state_label(&self.pkg).is_some();
+                    for w in dropped.into_iter().filter(|w| w.notify.is_some()) {
+                        sender.output(AppMsg::RemoveInstalledBusy(w));
+                    }
+                    if running || self.workqueue.is_empty() {
+                        return;
+                    }
+                }
                 // If running, cancel the current process
                 if let Some(h) = self.workqueue.iter().next() {
                     if h.pkg == self.pkg {
@@ -1609,10 +1621,30 @@ impl Component for PkgModel {
                 self.set_installtype(t);
             }
             PkgMsg::AddToQueue(work) => {
-                self.workqueue.insert(work.clone());
-                if self.workqueue.len() == 1 {
-                    self.installworker.emit(InstallAsyncHandlerMsg::Process(work));
+                self.queue_work(work, &sender);
+            }
+            PkgMsg::QueueChanged => {}
+            PkgMsg::ProfileFinished(work, ok) => {
+                if ok {
+                    match work.action {
+                        PkgAction::Install => {
+                            self.installeduserpkgs.insert(work.pkg.to_string());
+                            if work.pkg == self.pkg && self.launchable.is_none() && in_path(&self.pname) {
+                                self.set_launchable(Some(Launch::TerminalApp(self.pname.to_string())));
+                            }
+                        }
+                        PkgAction::Remove => {
+                            self.installeduserpkgs.remove(&work.pkg);
+                        }
+                    }
                 }
+                if work.notify.is_some() {
+                    sender.output(AppMsg::RemoveInstalledBusy(work));
+                }
+            }
+            PkgMsg::ProfileBatchDone => {
+                let _ = nix_data::utils::refreshicons();
+                sender.output(AppMsg::UpdateInstalledPkgs);
             }
             PkgMsg::UpdateOnline(online) => {
                 self.set_online(online);
@@ -1679,3 +1711,51 @@ relm4::new_stateless_action!(NixSystemAction, ModeActionGroup, "system");
 relm4::new_action_group!(RunActionGroup, "run");
 relm4::new_stateless_action!(LaunchAction, RunActionGroup, "launch");
 relm4::new_stateless_action!(TermShellAction, RunActionGroup, "term");
+
+impl PkgModel {
+    /// Profile operations go to the app-wide queue; the rest keeps the page's own.
+    fn queue_work(&mut self, w: WorkPkg, sender: &ComponentSender<Self>) {
+        if w.pkgtype == InstallType::User && self.userpkgtype == UserPkgs::Profile {
+            if w.action == PkgAction::Remove {
+                confirm_remove(w, sender.output_sender().clone());
+            } else {
+                enqueue_profile(w, sender.output_sender());
+            }
+            return;
+        }
+        self.workqueue.insert(w.clone());
+        if self.workqueue.len() == 1 {
+            self.installworker.emit(InstallAsyncHandlerMsg::Process(w));
+        }
+    }
+}
+
+/// Queues a profile operation; clears the installed page's busy mark when it adds nothing to wait for.
+fn enqueue_profile(w: WorkPkg, out: &relm4::Sender<AppMsg>) {
+    if !userops::enqueue(w.clone()) && w.notify.is_some() {
+        out.emit(AppMsg::RemoveInstalledBusy(w));
+    }
+}
+
+/// Asks before a removal; Cancel is the default and enqueues nothing.
+fn confirm_remove(w: WorkPkg, out: relm4::Sender<AppMsg>) {
+    let name = if w.pname.is_empty() { w.pkg.clone() } else { w.pname.clone() };
+    let dialog = adw::MessageDialog::new(
+        relm4::main_application().active_window().as_ref(),
+        Some(&format!("Remove {name}?")),
+        Some(&format!("{name} will be removed from your profile.")),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("remove", "Remove");
+    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    dialog.connect_response(None, move |_, response| {
+        if response == "remove" {
+            enqueue_profile(w.clone(), &out);
+        } else if w.notify.is_some() {
+            out.emit(AppMsg::RemoveInstalledBusy(w.clone()));
+        }
+    });
+    dialog.present();
+}

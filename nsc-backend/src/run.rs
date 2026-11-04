@@ -88,7 +88,7 @@ pub async fn run_with_progress(
     run_inner(program, args, cancel, cfg!(unix), on_event).await
 }
 
-/// How long output may still arrive after the child exited.
+/// How long output may stay silent after the child exited.
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 enum Msg {
@@ -172,7 +172,12 @@ async fn run_inner(
 
     loop {
         tokio::select! {
-            msg = rx.recv() => match msg {
+            msg = rx.recv() => {
+                // Idle timeout: a backlog still being delivered must not be cut off.
+                if drain_deadline.is_some() {
+                    drain_deadline = Some(tokio::time::Instant::now() + DRAIN_TIMEOUT);
+                }
+                match msg {
                 Some(Msg::Line(s, l)) => on_event(Event::Line(s, l)),
                 Some(Msg::Json(l)) => {
                     if let Some(rec) = progress::parse_line(&l) {
@@ -187,6 +192,7 @@ async fn run_inner(
                     }
                 }
                 None => break,
+                }
             },
             st = child.wait(), if status.is_none() => {
                 status = Some(st);

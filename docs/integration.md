@@ -17,8 +17,17 @@ zstd, slimming) has merged in both repos.
 
 The app only runs `nix profile list --json|add|remove|upgrade`. It knows nothing about
 home-manager, profile hooks or kww; success is the exit code, the installed list is re-read
-from `nix profile list --json` after each operation, and progress comes from `json-log-path`
+from `nix profile list --json` after each command, and progress comes from `json-log-path`
 (a unix socket passed through `NIX_CONFIG`), so nested `nix` calls a hook makes show up too.
+
+Installs and removals from the user profile go through one app-wide queue and a non-modal
+panel at the bottom of the window; the window stays usable. One `nix profile` command runs at a
+time: all queued installs become one `nix profile add a b c --impure` (`install` on old Nix),
+queued removals one `nix profile remove a b`, in queue order. Nix reverts a failed command as a
+whole, so a failed batch of several is retried package by package and the panel lists what
+failed, with Nix's output, until dismissed. Cancel stops the running batch without retrying;
+a queued package can be cancelled from its page. Removing asks for confirmation first. Upgrades
+still use the modal dialog. The smoke binary accepts several installables (one `add`).
 
 ## webtop-nix
 
