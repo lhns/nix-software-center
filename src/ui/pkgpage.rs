@@ -1205,7 +1205,8 @@ impl Component for PkgModel {
                     let mut pango = html2pango::markup_html(&input)
                         .unwrap_or_else(|_| {
                             warn!("Pango failed to parse description");
-                            input.to_string()
+                            // Goes to set_markup: unparsed text must not be read as markup.
+                            gtk::glib::markup_escape_text(&input).to_string()
                         })
                         .trim()
                         .to_string();
