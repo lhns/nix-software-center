@@ -44,6 +44,7 @@ jobs:
         if: matrix.system == 'x86_64-linux'
         run: |
           nix build .#packages.${{ matrix.system }}.pkgdb-small -L -o pkgdb-small
+          nix build .#packages.${{ matrix.system }}.nix-software-center -L -o app
           export XDG_RUNTIME_DIR=$(mktemp -d) HOME=$(mktemp -d)
           mkdir -p shots
           export NSC_UI_TEST=$PWD/shots NSC_PKGDB=$(readlink -f pkgdb-small)/nixpkgs.db NSC_ONLINE_CHECK_URL= GSK_RENDERER=cairo
@@ -51,7 +52,7 @@ jobs:
             weston --backend=headless --socket=wl-ci &
             for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.2; done
             set +e
-            WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session --config-file="$(dirname "$(command -v dbus-daemon)")/../share/dbus-1/session.conf" -- timeout 120 result/bin/nix-software-center > shots/app.log 2>&1
+            WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session --config-file="$(dirname "$(command -v dbus-daemon)")/../share/dbus-1/session.conf" -- timeout 120 app/bin/nix-software-center > shots/app.log 2>&1
             rc=$?
             set -e
             tail -n 40 shots/app.log
