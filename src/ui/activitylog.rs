@@ -36,6 +36,7 @@ pub struct ActivityLogModel {
     status: gtk::Label,
     bar: gtk::ProgressBar,
     pages: gtk::Stack,
+    scroller: gtk::ScrolledWindow,
     waiting: adw::StatusPage,
     buffer: gtk::TextBuffer,
     cancel: gtk::Button,
@@ -227,6 +228,7 @@ impl SimpleComponent for ActivityLogModel {
             status,
             bar,
             pages,
+            scroller,
             waiting,
             buffer,
             cancel,
@@ -335,7 +337,6 @@ impl ActivityLogModel {
         self.pages.set_visible_child_name(if queued { "waiting" } else { "log" });
         if queued {
             self.waiting.set_description(Some("The log appears once it starts."));
-            self.waiting.set_title(&queued_text(entry.ahead));
         }
         let finished = matches!(entry.state, EntryState::Done | EntryState::Failed(_) | EntryState::Cancelled);
         let retryable = matches!(entry.state, EntryState::Failed(_) | EntryState::Cancelled);
@@ -364,6 +365,11 @@ impl ActivityLogModel {
             let mut from = self.buffer.start_iter();
             let mut to = self.buffer.iter_at_line(excess).unwrap_or_else(|| self.buffer.end_iter());
             self.buffer.delete(&mut from, &mut to);
+        }
+        if self.follow.get() {
+            // The new text is laid out later; scroll then.
+            let adj = self.scroller.vadjustment();
+            gtk::glib::idle_add_local_once(move || adj.set_value(adj.upper() - adj.page_size()));
         }
     }
 }
