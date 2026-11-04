@@ -5,6 +5,8 @@ use adw::prelude::*;
 use nsc_backend::progress::Summary;
 use relm4::*;
 
+const MAX_FAILURES: usize = 20;
+
 pub struct QueuePanelModel {
     title: String,
     waiting: usize,
@@ -157,7 +159,7 @@ impl SimpleComponent for QueuePanelModel {
             QueuePanelMsg::Refresh => {
                 let snap = userops::snapshot();
                 let title = snap.title.clone().unwrap_or_default();
-                if title != self.title {
+                if title != self.title || snap.title.is_none() {
                     // A new batch: the old Cancel no longer applies.
                     self.cancelling = false;
                 }
@@ -171,6 +173,9 @@ impl SimpleComponent for QueuePanelModel {
             }
             QueuePanelMsg::AddFailures(f) => {
                 self.failures.extend(f);
+                // Bounded: the panel may stay undismissed for a long time.
+                let extra = self.failures.len().saturating_sub(MAX_FAILURES);
+                self.failures.drain(..extra);
                 self.failuretext = self
                     .failures
                     .iter()

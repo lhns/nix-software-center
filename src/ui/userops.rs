@@ -133,11 +133,22 @@ fn done(r: Result<bool>) -> bool {
     }
 }
 
-static QUEUE: Mutex<Option<Queue<WorkPkg>>> = Mutex::new(None);
-static QUEUE_CANCEL: Mutex<Option<Cancel>> = Mutex::new(None);
+/// The queue and the cancel handle of its running batch, under one lock so a
+/// cancel can neither miss a batch that just started nor hit the next one.
+#[derive(Default)]
+struct QueueState {
+    queue: Queue<WorkPkg>,
+    cancel: Option<Cancel>,
+}
+
+static QUEUE: Mutex<Option<QueueState>> = Mutex::new(None);
+
+fn with_state<R>(f: impl FnOnce(&mut QueueState) -> R) -> R {
+    f(QUEUE.lock().unwrap().get_or_insert_with(Default::default))
+}
 
 fn with_queue<R>(f: impl FnOnce(&mut Queue<WorkPkg>) -> R) -> R {
-    f(QUEUE.lock().unwrap().get_or_insert_with(Queue::new))
+    with_state(|s| f(&mut s.queue))
 }
 
 fn action_of(a: &PkgAction) -> Action {
@@ -186,23 +197,24 @@ pub fn state_label(key: &str) -> Option<&'static str> {
 /// Drops the queued items for `key` (returned, to clear their busy marks) or,
 /// when it is part of the running batch, cancels that batch.
 pub fn cancel_item(key: &str) -> Vec<WorkPkg> {
-    let (gone, running) = with_queue(|q| {
-        let gone = q.cancel_queued(key);
-        let running = matches!(q.key_status(key), Some((_, Status::Running)));
-        (gone, running)
+    let gone = with_state(|s| {
+        let gone = s.queue.cancel_queued(key);
+        if gone.is_empty() && matches!(s.queue.key_status(key), Some((_, Status::Running))) {
+            if let Some(c) = &s.cancel {
+                c.cancel();
+            }
+        }
+        gone
     });
     if !gone.is_empty() {
         changed();
-    }
-    if running && gone.is_empty() {
-        cancel_queue_batch();
     }
     gone.into_iter().map(|i| i.payload).collect()
 }
 
 /// Cancels the running batch; its items are reported as cancelled, not retried.
 pub fn cancel_queue_batch() {
-    if let Some(c) = QUEUE_CANCEL.lock().unwrap().as_ref() {
+    if let Some(c) = &with_state(|s| s.cancel.clone()) {
         c.cancel();
     }
 }
@@ -241,15 +253,22 @@ pub fn snapshot() -> Snapshot {
 async fn run_queue() {
     let nix = nix().await;
     loop {
-        let Some(batch) = with_queue(|q| q.start()) else { break };
         let cancel = Cancel::new();
-        *QUEUE_CANCEL.lock().unwrap() = Some(cancel.clone());
+        let Some(batch) = with_state(|s| {
+            let batch = s.queue.start();
+            s.cancel = batch.as_ref().map(|_| cancel.clone());
+            batch
+        }) else {
+            break;
+        };
         QUEUE_PANEL_BROKER.send(QueuePanelMsg::Progress(Default::default()));
         changed();
 
         let result = run_batch(nix, &batch, &cancel).await;
-        let outcomes = with_queue(|q| q.complete(result));
-        *QUEUE_CANCEL.lock().unwrap() = None;
+        let outcomes = with_state(|s| {
+            s.cancel = None;
+            s.queue.complete(result)
+        });
 
         let mut failures = vec![];
         for o in &outcomes {
@@ -277,6 +296,9 @@ async fn run_queue() {
     changed();
 }
 
+/// Longest output line kept for the panel's failure text.
+const MAX_LINE: usize = 1000;
+
 async fn run_batch(nix: &Nix, batch: &queue::Batch<WorkPkg>, cancel: &Cancel) -> BatchResult {
     let mut tail: VecDeque<String> = VecDeque::new();
     let mut sink = |e: Event| match e {
@@ -284,7 +306,7 @@ async fn run_batch(nix: &Nix, batch: &queue::Batch<WorkPkg>, cancel: &Cancel) ->
             if tail.len() == 12 {
                 tail.pop_front();
             }
-            tail.push_back(line);
+            tail.push_back(line.chars().take(MAX_LINE).collect());
         }
         Event::Progress(s) => QUEUE_PANEL_BROKER.send(QueuePanelMsg::Progress(s)),
     };

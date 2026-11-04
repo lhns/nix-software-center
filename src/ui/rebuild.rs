@@ -279,6 +279,8 @@ impl SimpleComponent for RebuildModel {
     }
 }
 
+const MAX_LINES: i32 = 5000;
+
 impl RebuildModel {
     /// One line at the end of the buffer.
     fn append(&self, line: &str) {
@@ -287,6 +289,13 @@ impl RebuildModel {
             self.buffer.insert(&mut end, "\n");
         }
         self.buffer.insert(&mut end, line);
+        // Bounded: a long build can print without end.
+        let excess = self.buffer.line_count() - MAX_LINES;
+        if excess > 0 {
+            let mut from = self.buffer.start_iter();
+            let mut to = self.buffer.iter_at_line(excess).unwrap_or_else(|| self.buffer.end_iter());
+            self.buffer.delete(&mut from, &mut to);
+        }
         trace!("APPENDED: {}", line);
     }
 }
