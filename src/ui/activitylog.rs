@@ -36,7 +36,8 @@ pub struct ActivityLogModel {
     status: gtk::Label,
     bar: gtk::ProgressBar,
     pages: gtk::Stack,
-    scroller: gtk::ScrolledWindow,
+    view: gtk::TextView,
+    end: gtk::TextMark,
     waiting: adw::StatusPage,
     buffer: gtk::TextBuffer,
     cancel: gtk::Button,
@@ -127,6 +128,7 @@ impl SimpleComponent for ActivityLogModel {
         info.append(&bar);
 
         let buffer = gtk::TextBuffer::new(None);
+        let end = buffer.create_mark(None, &buffer.end_iter(), false);
         let view = gtk::TextView::with_buffer(&buffer);
         view.set_editable(false);
         view.set_cursor_visible(false);
@@ -236,7 +238,8 @@ impl SimpleComponent for ActivityLogModel {
             status,
             bar,
             pages,
-            scroller,
+            view,
+            end,
             waiting,
             buffer,
             cancel,
@@ -375,9 +378,8 @@ impl ActivityLogModel {
             self.buffer.delete(&mut from, &mut to);
         }
         if self.follow.get() {
-            // The new text is laid out later; scroll then.
-            let adj = self.scroller.vadjustment();
-            gtk::glib::idle_add_local_once(move || adj.set_value(adj.upper() - adj.page_size()));
+            // Waits for the text to be laid out, unlike setting the adjustment.
+            self.view.scroll_to_mark(&self.end, 0.0, false, 0.0, 1.0);
         }
     }
 }
