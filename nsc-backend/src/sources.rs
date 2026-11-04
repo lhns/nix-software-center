@@ -35,6 +35,20 @@ impl Settings {
     }
 }
 
+static SETTINGS: std::sync::OnceLock<Settings> = std::sync::OnceLock::new();
+
+/// The deployer settings, read once.
+pub fn settings() -> &'static Settings {
+    SETTINGS.get_or_init(Settings::from_env)
+}
+
+/// A NixOS system whose configuration the app may manage.
+pub fn is_nixos() -> bool {
+    // NSC_FAKE_NIXOS is a test seam: CI is not NixOS but must show the NixOS-only screens.
+    settings().system_packages
+        && (Path::new("/etc/NIXOS").exists() || std::env::var_os("NSC_FAKE_NIXOS").is_some())
+}
+
 /// Why a flake reference was refused.
 pub fn validate_flake_ref(s: &str) -> Result<(), String> {
     if s.is_empty() {

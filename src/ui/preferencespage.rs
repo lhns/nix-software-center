@@ -1,5 +1,6 @@
 use std::path::{PathBuf, Path};
-use super::window::AppMsg;
+use super::{sourcespage::SourcesGroup, window::AppMsg};
+use std::rc::Rc;
 use adw::prelude::*;
 use nix_data::config::configfile::NixDataConfig;
 use relm4::*;
@@ -15,6 +16,8 @@ pub struct PreferencesPageModel {
     open_dialog: Controller<OpenDialog>,
     #[tracker::no_eq]
     flake_file_dialog: Controller<OpenDialog>,
+    #[tracker::no_eq]
+    sources: Rc<SourcesGroup>,
 }
 
 #[derive(Debug)]
@@ -39,13 +42,15 @@ impl SimpleComponent for PreferencesPageModel {
     view! {
         adw::PreferencesWindow {
 			set_hide_on_close: true,
+            set_title: Some(if nsc_backend::sources::is_nixos() { "Preferences" } else { "Sources" }),
             set_transient_for: Some(&parent_window),
             set_modal: true,
             set_search_enabled: false,
+            #[name(prefpage)]
             add = &adw::PreferencesPage {
                 add = &adw::PreferencesGroup {
                     // set_title: "Preferences",
-                    set_visible: Path::new("/etc/NIXOS").exists(),
+                    set_visible: nsc_backend::sources::is_nixos(),
                     add = &adw::ActionRow {
                         set_title: "Configuration file",
                         add_suffix = &gtk::Box {
@@ -197,10 +202,17 @@ impl SimpleComponent for PreferencesPageModel {
             flakearg: None,
             open_dialog,
             flake_file_dialog,
+            sources: SourcesGroup::new({
+                let sender = sender.clone();
+                move || {
+                    let _ = sender.output(AppMsg::TryLoad);
+                }
+            }),
             tracker: 0,
         };
 
         let widgets = view_output!();
+        widgets.prefpage.add(&model.sources.group);
 
         ComponentParts { model, widgets }
     }
@@ -209,6 +221,7 @@ impl SimpleComponent for PreferencesPageModel {
         self.reset();
         match msg {
             PreferencesPageMsg::Show(config) => {
+                self.sources.rebuild();
                 self.configpath = config.systemconfig.as_ref().map(PathBuf::from);
                 self.set_flake(config.flake.as_ref().map(PathBuf::from));
                 self.set_flakearg(config.flakearg);

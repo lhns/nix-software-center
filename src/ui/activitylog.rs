@@ -67,6 +67,21 @@ pub fn hide_on_escape(window: &impl IsA<gtk::Widget>) {
 }
 
 /// Last non-empty line, cut to one readable line.
+/// The one-line state of an entry, for the Activity row and the log modal.
+pub fn state_text(e: &Entry<Job>) -> String {
+    match &e.state {
+        EntryState::Queued if e.ahead == 0 => "Up next".to_string(),
+        EntryState::Queued => format!("Waiting, {} ahead", e.ahead),
+        EntryState::Running => match &e.progress {
+            Some(p) if !p.label.is_empty() => p.label.clone(),
+            _ => "Working…".to_string(),
+        },
+        EntryState::Done => "Done".to_string(),
+        EntryState::Failed(text) => format!("Failed: {}", last_line(text)),
+        EntryState::Cancelled => "Cancelled".to_string(),
+    }
+}
+
 pub fn last_line(text: &str) -> String {
     let line = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     let mut short: String = line.chars().take(160).collect();
@@ -330,16 +345,7 @@ impl ActivityLogModel {
     fn show(&self, entry: &Entry<Job>) {
         self.title.set_title(&entry.payload.title());
         self.title.set_subtitle(entry.payload.target());
-        let status = match &entry.state {
-            EntryState::Queued => queued_text(entry.ahead),
-            EntryState::Running => match &entry.progress {
-                Some(p) if !p.label.is_empty() => p.label.clone(),
-                _ => "Working…".to_string(),
-            },
-            EntryState::Done => "Finished".to_string(),
-            EntryState::Failed(text) => format!("Failed: {}", last_line(text)),
-            EntryState::Cancelled => "Cancelled".to_string(),
-        };
+        let status = state_text(entry);
         self.status.set_label(&status);
         let running = entry.state == EntryState::Running;
         self.bar.set_visible(running);
@@ -382,12 +388,5 @@ impl ActivityLogModel {
             let mut to = self.buffer.iter_at_line(excess).unwrap_or_else(|| self.buffer.end_iter());
             self.buffer.delete(&mut from, &mut to);
         }
-    }
-}
-
-fn queued_text(ahead: usize) -> String {
-    match ahead {
-        0 => "Up next".to_string(),
-        n => format!("Waiting, {n} ahead"),
     }
 }

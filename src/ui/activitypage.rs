@@ -2,7 +2,7 @@
 //! modal; their buttons act on the queue directly.
 
 use super::{
-    activitylog::{last_line, LogMsg},
+    activitylog::{state_text, LogMsg},
     jobs::{Job, JobKind},
     userops,
     window::{AppMsg, ACTIVITYLOG_BROKER},
@@ -186,17 +186,7 @@ impl ActivityPageModel {
 }
 
 fn subtitle(e: &Entry<Job>) -> String {
-    let state = match &e.state {
-        EntryState::Queued if e.ahead == 0 => "Up next".to_string(),
-        EntryState::Queued => format!("Waiting, {} ahead", e.ahead),
-        EntryState::Running => match &e.progress {
-            Some(p) if !p.label.is_empty() => p.label.clone(),
-            _ => "Working…".to_string(),
-        },
-        EntryState::Done => "Done".to_string(),
-        EntryState::Failed(text) => format!("Failed: {}", last_line(text)),
-        EntryState::Cancelled => "Cancelled".to_string(),
-    };
+    let state = state_text(e);
     format!("{} · {}", e.payload.target(), state)
 }
 

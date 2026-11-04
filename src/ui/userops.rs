@@ -48,7 +48,9 @@ pub async fn installed_versions(pkgdb_path: &str) -> Result<HashMap<String, Stri
         warn!("Cannot open package database {}: {}", pkgdb_path, e);
     }
     let mut out = HashMap::new();
-    for pkg in profile::installed(&elements) {
+    let installed = installed_in_sources(&elements);
+    super::sourceinfo::set_removed(installed.iter().filter(|p| p.source_removed).map(|p| p.key.clone()).collect());
+    for pkg in installed {
         let dbversion = match (&pkg.nixpkgs_attr, &pool) {
             (Some(attr), Ok(pool)) => pkgdb::version(pool, attr).await,
             _ => None,
@@ -60,9 +62,14 @@ pub async fn installed_versions(pkgdb_path: &str) -> Result<HashMap<String, Stri
     Ok(out)
 }
 
+fn installed_in_sources(elements: &[profile::ProfileElement]) -> Vec<profile::InstalledPkg> {
+    let (srcs, unfree) = super::sourceinfo::profile_sources();
+    profile::installed_in(elements, Some((&srcs, &unfree)))
+}
+
 /// Element names behind `keys`, looked up in the profile as it is now.
 async fn element_names(keys: &[String]) -> Result<Vec<String>> {
-    let installed = profile::installed(&profile::list(nix().await).await?);
+    let installed = installed_in_sources(&profile::list(nix().await).await?);
     let mut names = vec![];
     for key in keys {
         let before = names.len();
@@ -158,6 +165,10 @@ pub fn enqueue(work: WorkPkg, ctx: Ctx) -> bool {
     if work.block {
         return false;
     }
+    if work.pkgtype == InstallType::System && !nsc_backend::sources::settings().system_packages {
+        warn!("Refusing a system job: system packages are off");
+        return false;
+    }
     let key = pkg_key(&work.pkg, &work.pkgtype, &ctx.userpkgs);
     let action = match (&work.pkgtype, &ctx.userpkgs, &work.action) {
         (InstallType::User, UserPkgs::Profile, PkgAction::Install) => Action::Install,
@@ -170,6 +181,10 @@ pub fn enqueue(work: WorkPkg, ctx: Ctx) -> bool {
 
 /// Queues an update. False when the same update is already queued or running.
 pub fn enqueue_update(update: UpdateJob, ctx: Ctx) -> bool {
+    if update.scope == UpdateType::System && !nsc_backend::sources::settings().system_packages {
+        warn!("Refusing a system update: system packages are off");
+        return false;
+    }
     let key = match update.scope {
         UpdateType::System => "update:system",
         UpdateType::User => "update:user",
@@ -372,8 +387,12 @@ async fn run_batch(nix: &Nix, batch: &queue::Batch<Job>, cancel: &Cancel) -> Bat
     let mut lines = Lines::default();
     let res = match batch.action {
         Action::Install => {
-            let installables: Vec<String> = batch.keys().iter().map(|k| format!("nixpkgs#{k}")).collect();
-            ops::add_many(nix, &installables, cancel, profile_sink(&mut lines)).await
+            let installables: Result<Vec<String>, String> =
+                batch.keys().iter().map(|k| super::sourceinfo::installable(k)).collect();
+            match installables {
+                Ok(installables) => ops::add_many(nix, &installables, cancel, profile_sink(&mut lines)).await,
+                Err(e) => Err(anyhow::anyhow!(e)),
+            }
         }
         Action::Remove => match element_names(&batch.keys()).await {
             Ok(names) => ops::remove(nix, &names, cancel, profile_sink(&mut lines)).await,
@@ -428,8 +447,13 @@ pub async fn unavailable(pkgdb_path: &str) -> HashMap<String, String> {
 }
 
 async fn unavailable_in(pkgdb_path: &str) -> Result<HashMap<String, String>> {
-    let installed = profile::installed(&profile::list(nix().await).await?);
-    let mut attrs: Vec<String> = installed.into_iter().filter_map(|p| p.nixpkgs_attr).collect();
+    let installed = installed_in_sources(&profile::list(nix().await).await?);
+    // Third-party apps are not "missing" just because their catalogue is not fetched yet.
+    let mut attrs: Vec<String> = installed
+        .into_iter()
+        .filter_map(|p| p.nixpkgs_attr)
+        .filter(|a| !a.contains(':'))
+        .collect();
     attrs.sort();
     attrs.dedup();
     let pool = pkgdb::connect(Path::new(pkgdb_path)).await?;

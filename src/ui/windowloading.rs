@@ -40,7 +40,7 @@ impl Worker for WindowAsyncHandler {
                     let mut catpicks: HashMap<PkgCategory, Vec<String>> = HashMap::new();
                     let mut catpkgs: HashMap<PkgCategory, Vec<String>> = HashMap::new();
 
-                    let nixos = Path::new("/etc/NIXOS").exists();
+                    let nixos = nsc_backend::sources::is_nixos();
                     let fixeddb = pkgdb_override();
 
                     let pkgdb = if let Some(p) = &fixeddb {
@@ -71,6 +71,19 @@ impl Worker for WindowAsyncHandler {
                         }
                     };
 
+                    // One database for every query: built-in packages plus the sources' catalogues.
+                    let pkgdb = match super::sourceinfo::merged(&pkgdb).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("Error merging package databases: {}", e);
+                            let _ = sender.output(AppMsg::LoadError(
+                                String::from("Error merging package databases"),
+                                e,
+                            ));
+                            return;
+                        }
+                    };
+
                     let pool = match SqlitePool::connect(&format!("sqlite://{}", pkgdb)).await {
                         Ok(p) => p,
                         Err(e) => {
@@ -86,7 +99,7 @@ impl Worker for WindowAsyncHandler {
                     let nixpkgsdb = match userpkgs {
                         UserPkgs::Profile => {
                             if fixeddb.is_some() {
-                                fixeddb.clone()
+                                Some(pkgdb.clone())
                             } else if let Ok(x) = nix_data::cache::profile::nixpkgslatest().await {
                                 Some(x)
                             } else {
@@ -114,7 +127,7 @@ impl Worker for WindowAsyncHandler {
                         }
                     };
 
-                    let pkglist: Vec<(String,)> = match sqlx::query_as("SELECT attribute FROM pkgs")
+                    let pkglist: Vec<(String,)> = match sqlx::query_as("SELECT attribute FROM listed_pkgs")
                         .fetch_all(&pool)
                         .await
                     {
@@ -132,7 +145,9 @@ impl Worker for WindowAsyncHandler {
                     let pkglist = pkglist.iter().map(|x| x.0.clone()).collect::<Vec<String>>();
 
                     let posvec: Vec<(String, String)> =
-                        match sqlx::query_as("SELECT attribute, position FROM meta")
+                        match sqlx::query_as(
+                            "SELECT attribute, position FROM meta WHERE attribute IN (SELECT attribute FROM listed_pkgs)",
+                        )
                             .fetch_all(&pool)
                             .await
                         {
@@ -452,7 +467,7 @@ impl Worker for WindowAsyncHandler {
                     if pkgdb_override().is_some() {
                         return;
                     }
-                    let nixos = Path::new("/etc/NIXOS").exists();
+                    let nixos = nsc_backend::sources::is_nixos();
 
                     let _pkgdb = if nixos {
                         match nix_data::cache::nixos::nixospkgs().await {
@@ -556,8 +571,9 @@ impl SimpleComponent for LoadErrorModel {
             set_text: Some(&model.msg),
             #[watch]
             set_secondary_text: Some(&model.msg2),
-            set_use_markup: true,
-            set_secondary_use_markup: true,
+            // Errors carry file names and nix output: shown as they are.
+            set_use_markup: false,
+            set_secondary_use_markup: false,
             add_button: ("Retry", gtk::ResponseType::Accept),
             // add_button: ("Preferences", gtk::ResponseType::Help),
             add_button: ("Quit", gtk::ResponseType::Close),

@@ -215,7 +215,7 @@ impl FactoryComponent for SearchItemModel {
                             set_halign: gtk::Align::Start,
                             add_css_class: "dim-label",
                             add_css_class: "caption",
-                            set_label: self.item.pkg.as_str(),
+                            set_label: &super::sourceinfo::caption(&self.item.pkg),
                             set_ellipsize: pango::EllipsizeMode::End,
                             set_lines: 1,
                             set_wrap: true,

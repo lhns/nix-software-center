@@ -25,7 +25,7 @@ use log::*;
 use crate::parse::packages::PkgMaintainer;
 use crate::parse::util;
 
-use super::{activitylog::LogMsg, userops, window::ACTIVITYLOG_BROKER};
+use super::{activitylog::LogMsg, sourceinfo, userops, window::ACTIVITYLOG_BROKER};
 use super::window::SystemPkgs;
 use super::window::UserPkgs;
 use super::{screenshotfactory::ScreenshotItem, window::AppMsg};
@@ -296,7 +296,7 @@ impl Component for PkgModel {
                                             set_wrap_mode: pango::WrapMode::WordChar,
                                             set_natural_wrap_mode: gtk::NaturalWrapMode::Word,
                                             #[watch]
-                                            set_label: &model.pkg,
+                                            set_label: &sourceinfo::caption(&model.pkg),
                                         },
                                         gtk::Label {
                                             add_css_class: "dim-label",
@@ -1210,7 +1210,13 @@ impl Component for PkgModel {
                     while input.contains("  ") {
                         input = input.replace("  ", " ");
                     }
-                    let mut pango = html2pango::markup_html(&input)
+                    // A third-party description is text, never markup (no tags, no links).
+                    let third_party = self.pkg.contains(':');
+                    let mut pango = if third_party {
+                        Ok(gtk::glib::markup_escape_text(&input).to_string())
+                    } else {
+                        html2pango::markup_html(&input)
+                    }
                         .unwrap_or_else(|_| {
                             warn!("Pango failed to parse description");
                             // Goes to set_markup: unparsed text must not be read as markup.
@@ -1459,6 +1465,14 @@ impl Component for PkgModel {
                 }
             }
             PkgMsg::NixRun => {
+                let installable = match sourceinfo::installable(&self.pkg) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        warn!("Cannot run {}: {}", self.pkg, e);
+                        return;
+                    }
+                };
+                let quoted = sourceinfo::shell_quote(&installable);
                 if let Some(l) = &self.launchable {
                     match l {
                         Launch::GtkApp(x) => {
@@ -1476,11 +1490,15 @@ impl Component for PkgModel {
                                     debug!("Launching {} with nix shell", x);
                                     let _ = Command::new("nix")
                                         .arg("shell")
-                                        .arg(&format!("nixpkgs#{}", self.pkg))
+                                        .arg(&installable)
                                         .arg("--command")
                                         .arg("bash")
                                         .arg("-c")
-                                        .arg(&format!("env XDG_DATA_DIRS=$XDG_DATA_DIRS:$(nix eval nixpkgs#{}.outPath --raw)/share gtk-launch {}", self.pkg, x))
+                                        .arg(&format!(
+                                            "env XDG_DATA_DIRS=$XDG_DATA_DIRS:$(nix eval {} --raw)/share gtk-launch {}",
+                                            sourceinfo::shell_quote(&format!("{installable}.outPath")),
+                                            x
+                                        ))
                                         .spawn();
                                 }
                             }
@@ -1491,7 +1509,7 @@ impl Component for PkgModel {
                                     format!("nix-shell -p {} --command \"{}; $SHELL\"", self.pkg, x)
                                 }
                                 UserPkgs::Profile => {
-                                    format!("nix shell nixpkgs#{} --command bash -c \"{}; $SHELL\"", self.pkg, x)
+                                    format!("nix shell {} --command bash -c \"{}; $SHELL\"", quoted, x)
                                 }
                             };
                             launchterm(&cmd);
@@ -1503,7 +1521,7 @@ impl Component for PkgModel {
                             format!("nix-shell -p {} --command \"{}; $SHELL\"", self.pkg, self.pname)
                         }
                         UserPkgs::Profile => {
-                            format!("nix shell nixpkgs#{} --command bash -c \"{}; $SHELL\"", self.pkg, self.pname)
+                            format!("nix shell {} --command bash -c \"{}; $SHELL\"", quoted, self.pname)
                         }
                     };
                     launchterm(&cmd);
@@ -1515,7 +1533,7 @@ impl Component for PkgModel {
                         format!("nix-shell -p {}", self.pkg)
                     }
                     UserPkgs::Profile => {
-                        format!("nix shell nixpkgs#{}", self.pkg)
+                        format!("nix shell {}", quoted)
                     }
                 };
                 launchterm(&cmd);
@@ -1637,6 +1655,10 @@ impl PkgModel {
         let ctx = self.ctx();
         if w.action == PkgAction::Remove {
             confirm_remove(w, ctx, sender.output_sender().clone());
+        } else if w.action == PkgAction::Install && sourceinfo::is_unfree(&w.pkg) {
+            // The licence is known for the page's own package only.
+            let licence = if w.pkg == self.pkg { licence_text(&self.licenses) } else { String::new() };
+            confirm_unfree(w, licence, ctx, sender.output_sender().clone());
         } else {
             enqueue_work(w, ctx, sender.output_sender());
         }
@@ -1648,6 +1670,56 @@ fn enqueue_work(w: WorkPkg, ctx: userops::Ctx, out: &relm4::Sender<AppMsg>) {
     if !userops::enqueue(w.clone(), ctx) && w.notify.is_some() {
         out.emit(AppMsg::RemoveInstalledBusy(w));
     }
+}
+
+fn licence_text(licenses: &[License]) -> String {
+    licenses
+        .iter()
+        .map(|l| match &l.spdxid {
+            Some(id) if !id.is_empty() && id != &l.fullname => format!("{} ({})", l.fullname, id),
+            _ => l.fullname.clone(),
+        })
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The consent dialog for unfree software. Cancel is the default; the app and licence are plain text.
+pub fn unfree_dialog(name: &str, licence: &str) -> adw::MessageDialog {
+    let licence = if licence.is_empty() { "not free (see the app's page)" } else { licence };
+    let dialog = adw::MessageDialog::new(
+        relm4::main_application().active_window().as_ref(),
+        Some("Install unfree software?"),
+        Some(&format!(
+            "{name} is not free software.
+Licence: {licence}
+
+Installing it means you accept its licence terms."
+        )),
+    );
+    dialog.set_heading_use_markup(false);
+    dialog.set_body_use_markup(false);
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("install", "Install");
+    dialog.set_response_appearance("install", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    dialog
+}
+
+/// Asks at the Install click, never when a queued item starts; the installed element is the
+/// acceptance, so updates and restores do not ask again.
+fn confirm_unfree(w: WorkPkg, licence: String, ctx: userops::Ctx, out: relm4::Sender<AppMsg>) {
+    let name = if w.pname.is_empty() { w.pkg.clone() } else { w.pname.clone() };
+    let dialog = unfree_dialog(&name, &licence);
+    dialog.connect_response(None, move |_, response| {
+        if response == "install" {
+            enqueue_work(w.clone(), ctx.clone(), &out);
+        } else if w.notify.is_some() {
+            out.emit(AppMsg::RemoveInstalledBusy(w.clone()));
+        }
+    });
+    dialog.present();
 }
 
 /// Asks before a removal; Cancel is the default and enqueues nothing.
@@ -1663,6 +1735,8 @@ fn confirm_remove(w: WorkPkg, ctx: userops::Ctx, out: relm4::Sender<AppMsg>) {
         Some(&format!("Remove {name}?")),
         Some(&format!("{name} will be removed from {from}.")),
     );
+    dialog.set_heading_use_markup(false);
+    dialog.set_body_use_markup(false);
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("remove", "Remove");
     dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);

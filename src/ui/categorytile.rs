@@ -123,7 +123,7 @@ impl FactoryComponent for CategoryTile {
                                 set_halign: gtk::Align::Start,
                                 add_css_class: "dim-label",
                                 add_css_class: "caption",
-                                set_label: &self.pkg,
+                                set_label: &super::sourceinfo::caption(&self.pkg),
                                 set_ellipsize: pango::EllipsizeMode::End,
                                 set_lines: 1,
                                 set_wrap: true,
