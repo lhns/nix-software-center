@@ -33,6 +33,9 @@ jobs:
           HOME=$(mktemp -d) "$smoke" nixpkgs#hello --require-progress
       # The default unfree flake ships without a lock: it must resolve and install unfree apps with
       # no --impure on a fresh profile (the commit under test, not the default branch).
+      - name: print a fresh lock for nix/unfree
+        run: |
+          t=$(mktemp -d); cp nix/unfree/flake.nix "$t"; nix flake lock "$t"; cat "$t/flake.lock"
       - name: unfree flake without a lock
         run: |
           nix --version
