@@ -133,7 +133,6 @@ pub struct AppModel {
     viewstack: adw::ViewStack,
     installedpagebusy: Vec<(String, InstallType)>,
     #[tracker::no_eq]
-    #[tracker::no_eq]
     activitypage: Controller<ActivityPageModel>,
     #[tracker::no_eq]
     activitylog: Controller<ActivityLogModel>,
