@@ -292,7 +292,7 @@ impl FactoryComponent for InstalledItemModel {
                         set_halign: gtk::Align::Start,
                         add_css_class: "dim-label",
                         add_css_class: "caption",
-                        set_label: if let Some(p) = &self.item.pkg { p } else { &self.item.pname },
+                        set_label: &super::sourceinfo::caption(self.item.pkg.as_deref().unwrap_or(&self.item.pname)),
                         set_ellipsize: pango::EllipsizeMode::End,
                         set_lines: 1,
                         set_wrap: true,

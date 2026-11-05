@@ -6,7 +6,7 @@ use crate::{
         util,
     },
     ui::{
-        installedpage::InstalledItem, pkgpage::PkgPageInit, rebuild::RebuildMsg,
+        installedpage::InstalledItem, pkgpage::PkgPageInit,
         unavailabledialog::UnavailableDialogMsg, updatepage::UNAVAILABLE_BROKER,
         welcome::WelcomeMsg,
     },
@@ -40,15 +40,19 @@ use super::{
     pkgpage::{self, InstallType, PkgInitModel, PkgModel, PkgMsg, WorkPkg},
     pkgtile::PkgTile,
     preferencespage::{PreferencesPageModel, PreferencesPageMsg},
-    rebuild::RebuildModel,
+    activitylog::{ActivityLogModel, LogMsg},
+    activitypage::{ActivityMsg, ActivityPageModel},
     searchpage::{SearchItem, SearchPageModel, SearchPageMsg},
     unavailabledialog::UnavailableItemModel,
+    userops,
     updatepage::{UpdateItem, UpdatePageInit, UpdatePageModel, UpdatePageMsg, UpdateType},
     welcome::WelcomeModel,
     windowloading::{LoadErrorModel, LoadErrorMsg, WindowAsyncHandler, WindowAsyncHandlerMsg},
 };
 
-pub static REBUILD_BROKER: MessageBroker<RebuildMsg> = MessageBroker::new();
+pub static PKGPAGE_BROKER: MessageBroker<PkgMsg> = MessageBroker::new();
+pub static ACTIVITY_BROKER: MessageBroker<ActivityMsg> = MessageBroker::new();
+pub static ACTIVITYLOG_BROKER: MessageBroker<LogMsg> = MessageBroker::new();
 
 #[derive(PartialEq)]
 enum Page {
@@ -129,7 +133,11 @@ pub struct AppModel {
     viewstack: adw::ViewStack,
     installedpagebusy: Vec<(String, InstallType)>,
     #[tracker::no_eq]
-    rebuild: Controller<RebuildModel>,
+    activitypage: Controller<ActivityPageModel>,
+    #[tracker::no_eq]
+    activitylog: Controller<ActivityLogModel>,
+    #[tracker::no_eq]
+    toasts: adw::ToastOverlay,
     #[tracker::no_eq]
     welcomepage: Controller<WelcomeModel>,
     online: bool,
@@ -170,9 +178,16 @@ pub enum AppMsg {
     OpenCategoryPage(PkgCategory),
     LoadCategory(PkgCategory),
     UpdateRecPkgs(Vec<String>),
-    SetDarkMode(bool),
     GetUnavailableItems(HashMap<String, String>, HashMap<String, String>, UpdateType),
     CheckNetwork,
+    /// Work was queued, finished or changed: refresh the Activity badge.
+    ActivityChanged,
+    ShowTab(String),
+    /// An update was queued: toast with a link to the Activity tab.
+    UpdateQueued(String),
+    /// The window was closed while work is queued or running.
+    ConfirmClose,
+    StopAndQuit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,8 +253,11 @@ impl Component for AppModel {
                     }
                 }
             } else {
+                gtk::Box {
+                set_orientation: gtk::Orientation::Vertical,
                 #[name(main_leaf)]
                 adw::Leaflet {
+                    set_vexpand: true,
                     set_can_unfold: false,
                     set_homogeneous: false,
                     set_transition_type: adw::LeafletTransitionType::Over,
@@ -365,6 +383,7 @@ impl Component for AppModel {
                                 add: model.installedpage.widget(),
                                 add: model.searchpage.widget(),
                                 add: model.updatepage.widget(),
+                                add: model.activitypage.widget(),
                             },
                             adw::ViewSwitcherBar {
                                 set_stack: Some(viewstack),
@@ -375,6 +394,7 @@ impl Component for AppModel {
                         append: model.categorypage.widget(),
                     },
                     append: model.pkgpage.widget()
+                },
                 }
             }
         }
@@ -459,7 +479,7 @@ impl Component for AppModel {
         } else {
             UserPkgs::Env
         };
-        let nixos = Path::new("/etc/NIXOS").exists();
+        let nixos = nsc_backend::sources::is_nixos();
         let syspkgtype = if config.systemconfig.is_none() || !nixos {
             SystemPkgs::None
         } else {
@@ -495,12 +515,12 @@ impl Component for AppModel {
             .launch(root.clone().upcast())
             .forward(sender.input_sender(), identity);
         let pkgpage = PkgModel::builder()
-            .launch(PkgPageInit {
+            .launch_with_broker(PkgPageInit {
                 userpkgs: userpkgtype.clone(),
                 syspkgs: syspkgtype.clone(),
                 config: config.clone(),
                 online,
-            })
+            }, &PKGPAGE_BROKER)
             .forward(sender.input_sender(), identity);
         let searchpage = SearchPageModel::builder()
             .launch(())
@@ -520,9 +540,12 @@ impl Component for AppModel {
                 online,
             })
             .forward(sender.input_sender(), identity);
-        let rebuild = RebuildModel::builder()
-            .launch_with_broker(root.clone().upcast(), &REBUILD_BROKER)
+        let activitypage = ActivityPageModel::builder()
+            .launch_with_broker((), &ACTIVITY_BROKER)
             .forward(sender.input_sender(), identity);
+        let activitylog = ActivityLogModel::builder()
+            .launch_with_broker((), &ACTIVITYLOG_BROKER)
+            .detach();
         let viewstack = adw::ViewStack::new();
         let welcomepage = WelcomeModel::builder()
             .launch(root.clone().upcast())
@@ -565,21 +588,15 @@ impl Component for AppModel {
             updatepage,
             viewstack,
             installedpagebusy: vec![],
-            rebuild,
+            activitypage,
+            activitylog,
+            toasts: adw::ToastOverlay::new(),
             welcomepage,
             aboutpage,
             preferencespage,
             online,
             tracker: 0,
         };
-
-        {
-            let sender = sender.clone();
-            adw::StyleManager::default()
-                .connect_dark_notify(move |x| sender.input(AppMsg::SetDarkMode(x.is_dark())));
-        }
-
-        sender.input(AppMsg::SetDarkMode(adw::StyleManager::default().is_dark()));
 
         if welcome && nixos {
             model.welcomepage.emit(WelcomeMsg::Show);
@@ -621,6 +638,20 @@ impl Component for AppModel {
             .main_window
             .insert_action_group("menu", Some(&actions));
 
+        if !nsc_backend::sources::is_nixos() {
+            // Nothing to configure but the sources.
+            if let Some(menu) = widgets
+                .menu
+                .popover()
+                .and_then(|p| p.downcast::<gtk::PopoverMenu>().ok())
+                .and_then(|p| p.menu_model())
+                .and_then(|m| m.downcast::<gtk::gio::Menu>().ok())
+            {
+                menu.remove(0);
+                menu.insert(0, Some("Sources"), Some("menu.preferences"));
+            }
+        }
+
         widgets.main_stack.set_vhomogeneous(false);
         widgets.main_stack.set_hhomogeneous(false);
         let frontvs = widgets.viewstack.page(&widgets.frontpage);
@@ -638,6 +669,33 @@ impl Component for AppModel {
         installedvs.set_icon_name(Some("nsc-installed-symbolic"));
         updatesvs.set_icon_name(Some("nsc-update-symbolic"));
 
+        let activityvs = widgets.viewstack.page(model.activitypage.widget());
+        activityvs.set_title(Some("Activity"));
+        activityvs.set_name(Some("activity"));
+        activityvs.set_icon_name(Some("view-list-symbolic"));
+
+        // The log modal covers the whole window, package pages included, so it
+        // wraps the main stack rather than sitting in a tab.
+        let stack = widgets.main_stack.clone();
+        widgets.main_window.set_content(None::<&gtk::Widget>);
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&stack));
+        overlay.add_overlay(model.activitylog.widget());
+        model.toasts.set_child(Some(&overlay));
+        widgets.main_window.set_content(Some(&model.toasts));
+        super::activitylog::hide_on_escape(&widgets.main_window);
+        widgets.main_window.connect_close_request({
+            let sender = sender.clone();
+            move |_| {
+                if userops::is_busy() {
+                    sender.input(AppMsg::ConfirmClose);
+                    gtk::Inhibit(true)
+                } else {
+                    gtk::Inhibit(false)
+                }
+            }
+        });
+
         ComponentParts { model, widgets }
     }
 
@@ -646,7 +704,7 @@ impl Component for AppModel {
         &mut self,
         msg: Self::Input,
         sender: ComponentSender<Self>,
-        _root: &Self::Root,
+        root: &Self::Root,
     ) {
         self.reset();
         match msg {
@@ -670,7 +728,7 @@ impl Component for AppModel {
                 if let Err(e) = editconfig(self.config.clone()) {
                     warn!("Error editing config: {}", e);
                 }
-                let nixos = Path::new("/etc/NIXOS").exists();
+                let nixos = nsc_backend::sources::is_nixos();
                 self.syspkgtype = if self.config.systemconfig.is_none() || !nixos {
                     SystemPkgs::None
                 } else {
@@ -728,7 +786,7 @@ impl Component for AppModel {
                 if editconfig(self.config.clone()).is_err() {
                     warn!("Failed to update config");
                 }
-                let nixos = Path::new("/etc/NIXOS").exists();
+                let nixos = nsc_backend::sources::is_nixos();
                 if systemconfig.is_some() && nixos {
                     if self.syspkgtype == SystemPkgs::None {
                         if self.config.flake.is_some() {
@@ -768,7 +826,7 @@ impl Component for AppModel {
                     warn!("Failed to update config");
                 }
 
-                let nixos = Path::new("/etc/NIXOS").exists();
+                let nixos = nsc_backend::sources::is_nixos();
                 if nixos {
                     if flake.is_some() {
                         self.syspkgtype = SystemPkgs::Flake;
@@ -813,6 +871,9 @@ impl Component for AppModel {
                 self.pkgpage.emit(PkgMsg::UpdateConfig(self.config.clone()));
                 self.updatepage
                     .emit(UpdatePageMsg::UpdateConfig(self.config.clone()));
+                self.updatepage.emit(UpdatePageMsg::SetPkgDb(
+                    self.nixpkgsdb.clone().unwrap_or_else(|| self.pkgdb.clone()),
+                ));
                 sender.input(AppMsg::UpdateRecPkgs(recommendedapps));
                 let mut cat_guard = self.categories.guard();
                 cat_guard.clear();
@@ -828,6 +889,12 @@ impl Component for AppModel {
                 }
                 cat_guard.drop();
                 self.busy = false;
+                if std::env::var("NSC_UI_TEST").is_err() {
+                    refresh_stale(sender.input_sender().clone());
+                }
+                if let Ok(dir) = std::env::var("NSC_UI_TEST") {
+                    super::uitest::start(dir, root.clone().upcast(), sender.input_sender().clone());
+                }
             }
             AppMsg::UpdateRecPkgs(pkgs) => {
                 info!("AppMsg::UpdateRecPkgs");
@@ -880,6 +947,23 @@ impl Component for AppModel {
                                         UserPkgs::Env => pname.0,
                                         UserPkgs::Profile => pkg.to_string(),
                                     }),
+                                    installedsystem: installedsystem.contains(&pkg),
+                                })
+                            } else if let Ok((pname, description)) = sqlx::query_as::<_, (String, String)>(
+                                "SELECT pname, description FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = $1",
+                            )
+                            .bind(&pkg)
+                            .fetch_one(pool)
+                            .await
+                            {
+                                // Not in AppStream (third-party apps): the catalogue is all there is.
+                                pkgtiles.push(PkgTile {
+                                    pkg: pkg.to_string(),
+                                    name: pname.clone(),
+                                    pname,
+                                    icon: None,
+                                    summary: description,
+                                    installeduser: installeduser.contains_key(&pkg),
                                     installedsystem: installedsystem.contains(&pkg),
                                 })
                             }
@@ -1204,6 +1288,7 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                 let systemconfig = self.config.systemconfig.clone();
                 let syspkgtype = self.syspkgtype.clone();
                 let userpkgtype = self.userpkgtype.clone();
+                let pkgdb = self.pkgdb.clone();
                 sender.oneshot_command(async move {
                     let installedsystempkgs = if let Some(config) = &systemconfig {
                         match syspkgtype {
@@ -1230,14 +1315,16 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                     };
 
                     let installeduserpkgs = match userpkgtype {
-                        UserPkgs::Profile => {
-                            let pkgs = nix_data::cache::profile::getprofilepkgs_versioned().await;
-                            if let Ok(pkgs) = pkgs {
-                                pkgs
-                            } else {
-                                HashMap::new()
+                        UserPkgs::Profile => match userops::installed_versions(&pkgdb).await {
+                            Ok(pkgs) => pkgs,
+                            Err(e) => {
+                                // Nix without `profile list --json`
+                                warn!("nix profile list: {}; reading manifest.json", e);
+                                nix_data::cache::profile::getprofilepkgs_versioned()
+                                    .await
+                                    .unwrap_or_default()
                             }
-                        }
+                        },
                         UserPkgs::Env => {
                             let pkgs = nix_data::cache::channel::getenvpkgs();
                             if let Ok(pkgs) = pkgs {
@@ -1372,28 +1459,29 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                             }
                         }
                         UserPkgs::Profile => {
-                            for installedpkg in self.installeduserpkgs.keys() {
+                            for (installedpkg, installedver) in &self.installeduserpkgs {
                                 debug!("Checking package {}", installedpkg);
-                                let (pname, version): (String, String) = sqlx::query_as(
-                                    "SELECT pname, version FROM pkgs WHERE attribute = $1",
+                                // Entries missing from the database (other flakes,
+                                // renamed attributes) are listed by their key.
+                                let dbrow: Option<(String, String, Option<String>)> = sqlx::query_as(
+                                    "SELECT pname, version, description FROM pkgs LEFT JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = $1",
                                 )
                                 .bind(installedpkg)
-                                .fetch_one(pool)
+                                .fetch_optional(pool)
                                 .await
-                                .unwrap();
-                                let (description,): (String,) = sqlx::query_as(
-                                    "SELECT description FROM meta WHERE attribute = $1",
-                                )
-                                .bind(installedpkg)
-                                .fetch_one(pool)
-                                .await
-                                .unwrap();
-                                let mut name = pname.to_string();
-                                let mut summary = if description.is_empty() {
-                                    None
+                                .ok()
+                                .flatten();
+                                let indb = dbrow.is_some();
+                                let (pname, dbversion, description) = dbrow.unwrap_or_else(|| {
+                                    (installedpkg.clone(), String::new(), None)
+                                });
+                                let version = if installedver.is_empty() {
+                                    dbversion
                                 } else {
-                                    Some(description)
+                                    installedver.clone()
                                 };
+                                let mut name = pname.to_string();
+                                let mut summary = description.filter(|d| !d.is_empty());
                                 let mut icon = None;
                                 if let Some(data) = self.appdata.get(installedpkg) {
                                     if let Some(n) = &data.name {
@@ -1423,17 +1511,22 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                                         .installedpagebusy
                                         .contains(&(installedpkg.clone(), InstallType::User)),
                                 });
+                                if !indb {
+                                    continue;
+                                }
                                 if let Some(latest) = &self.nixpkgsdb {
                                     if let Ok(latestpool) =
                                         &SqlitePool::connect(&format!("sqlite://{}", latest)).await
                                     {
-                                        let (newver,): (String,) = sqlx::query_as(
+                                        let newver: Option<(String,)> = sqlx::query_as(
                                             "SELECT version FROM pkgs WHERE attribute = $1",
                                         )
                                         .bind(installedpkg)
-                                        .fetch_one(latestpool)
+                                        .fetch_optional(latestpool)
                                         .await
-                                        .unwrap();
+                                        .ok()
+                                        .flatten();
+                                        let Some((newver,)) = newver else { continue };
                                         debug!("PROFILE: {} {} {}", installedpkg, version, newver);
                                         if version != newver {
                                             updateuseritems.push(UpdateItem {
@@ -1509,13 +1602,15 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                                     if let Ok(currentpool) =
                                         &SqlitePool::connect(&format!("sqlite://{}", current)).await
                                     {
-                                        let (currver,): (String,) = sqlx::query_as(
+                                        let currver: Option<(String,)> = sqlx::query_as(
                                             "SELECT version FROM pkgs WHERE attribute = $1",
                                         )
                                         .bind(installedpkg)
-                                        .fetch_one(currentpool)
+                                        .fetch_optional(currentpool)
                                         .await
-                                        .unwrap();
+                                        .ok()
+                                        .flatten();
+                                        let Some((currver,)) = currver else { continue };
                                         debug!("SYSTEM: {} {} {}", installedpkg, currver, version);
                                         if version != currver {
                                             updatesystemitems.push(UpdateItem {
@@ -1616,6 +1711,61 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                 if name == "updates" && self.online {
                     sender.input(AppMsg::CheckNetwork);
                 }
+                if name == "activity" {
+                    sender.input(AppMsg::ActivityChanged);
+                }
+            }
+            AppMsg::ActivityChanged => {
+                let visible = self.viewstack.visible_child_name().map_or(false, |n| n == "activity");
+                if visible {
+                    userops::mark_failures_seen();
+                }
+                let (active, unseen) = userops::counts();
+                let page = self.viewstack.page(self.activitypage.widget());
+                page.set_badge_number(active as u32);
+                page.set_needs_attention(unseen > 0);
+            }
+            AppMsg::ShowTab(name) => {
+                self.viewstack.set_visible_child_name(&name);
+            }
+            AppMsg::UpdateQueued(title) => {
+                // Toast titles are markup.
+                let toast = adw::Toast::new(&gtk::glib::markup_escape_text(&title));
+                toast.set_button_label(Some("View"));
+                let input = sender.input_sender().clone();
+                toast.connect_button_clicked(move |_| input.emit(AppMsg::ShowTab("activity".into())));
+                self.toasts.add_toast(toast);
+            }
+            AppMsg::ConfirmClose => {
+                let dialog = adw::MessageDialog::new(
+                    relm4::main_application().active_window().as_ref(),
+                    Some("Quit while work is running?"),
+                    Some("Installs, removals or updates are still running or waiting. Stopping asks Nix to cancel them, and Nix may keep running for a moment."),
+                );
+                dialog.add_response("keep", "Keep Working");
+                dialog.add_response("stop", "Stop and Quit");
+                dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("keep"));
+                dialog.set_close_response("keep");
+                let input = sender.input_sender().clone();
+                dialog.connect_response(None, move |_, response| {
+                    if response == "stop" {
+                        input.emit(AppMsg::StopAndQuit);
+                    }
+                });
+                dialog.present();
+            }
+            AppMsg::StopAndQuit => {
+                userops::stop_all();
+                let input = sender.input_sender().clone();
+                let started = std::time::Instant::now();
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                    if !userops::is_busy() || started.elapsed() > std::time::Duration::from_secs(5) {
+                        input.emit(AppMsg::Close);
+                        return gtk::glib::Continue(false);
+                    }
+                    gtk::glib::Continue(true)
+                });
             }
             AppMsg::SetVsBar(vsbar) => {
                 self.set_showvsbar(vsbar);
@@ -1640,7 +1790,7 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                         warn!("Searchsplit: {:?}", searchsplit);
                         if let Ok(pkgpool) = &SqlitePool::connect(&format!("sqlite://{}", pkgdb)).await {
                             let mut queryb: QueryBuilder<Sqlite> = QueryBuilder::new(
-                                "SELECT pkgs.attribute, pkgs.pname, description, version FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE (",
+                                "SELECT pkgs.attribute, pkgs.pname, description, version FROM listed_pkgs AS pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE (",
                             );
                             for (i, q) in searchsplit.iter().enumerate() {
                                 if i == searchsplit.len() - 1 {
@@ -1752,7 +1902,7 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                     InstallType::System => work.pkg.to_string(),
                 };
                 self.installedpagebusy
-                    .retain(|(x, y)| x != &p && y != &work.pkgtype);
+                    .retain(|(x, y)| x != &p || y != &work.pkgtype);
                 self.installedpage.emit(InstalledPageMsg::UnsetBusy(work));
             }
             AppMsg::OpenCategoryPage(category) => {
@@ -1875,11 +2025,6 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
                     }
                     AppAsyncMsg::LoadCategory(category, catrec, catall)
                 });
-            }
-            AppMsg::SetDarkMode(dark) => {
-                info!("AppMsg::SetDarkMode({})", dark);
-                let scheme = if dark { "Adwaita-dark" } else { "Adwaita" };
-                self.rebuild.emit(RebuildMsg::SetScheme(scheme.to_string()));
             }
             AppMsg::GetUnavailableItems(userpkgs, syspkgs, updatetype) => {
                 info!("AppMsg::GetUnavailableItems");
@@ -2090,6 +2235,32 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
             }
         }
     }
+}
+
+static STALE_REFRESHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// After startup: rebuilds catalogues older than a day, then reloads once if one changed. Never
+/// runs while loading.
+fn refresh_stale(input: relm4::Sender<AppMsg>) {
+    use nsc_backend::sources;
+    if STALE_REFRESHED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    relm4::spawn(async move {
+        let mut changed = false;
+        for s in super::sourceinfo::store().sources().into_iter().filter(|s| !s.builtin && s.enabled) {
+            if !sources::stale(&s.id, sources::STALE_AFTER) {
+                continue;
+            }
+            let link = sources::catalogue_link(&s.id);
+            let before = std::fs::read_link(&link).ok();
+            let _ = sources::fetch(&s.id, &s.flake, sources::FETCH_TIMEOUT).await;
+            changed |= std::fs::read_link(&link).ok() != before;
+        }
+        if changed {
+            input.emit(AppMsg::TryLoad);
+        }
+    });
 }
 
 relm4::new_action_group!(MenuActionGroup, "menu");

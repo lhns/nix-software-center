@@ -1,6 +1,6 @@
 use crate::{APPINFO, ui::unavailabledialog::UnavailableDialogModel, parse::util};
 
-use super::{pkgpage::InstallType, window::*, updateworker::{UpdateAsyncHandler, UpdateAsyncHandlerMsg, UpdateAsyncHandlerInit}, rebuild::RebuildMsg, unavailabledialog::UnavailableDialogMsg};
+use super::{jobs::UpdateJob, pkgpage::InstallType, userops, window::*, unavailabledialog::UnavailableDialogMsg};
 use adw::prelude::*;
 use nix_data::config::configfile::NixDataConfig;
 use relm4::{factory::*, gtk::pango, *};
@@ -17,8 +17,6 @@ pub struct UpdatePageModel {
     #[tracker::no_eq]
     updatesystemlist: FactoryVecDeque<UpdateItemModel>,
     channelupdate: Option<(String, String)>,
-    #[tracker::no_eq]
-    updateworker: WorkerController<UpdateAsyncHandler>,
     config: NixDataConfig,
     systype: SystemPkgs,
     usertype: UserPkgs,
@@ -26,11 +24,14 @@ pub struct UpdatePageModel {
     #[tracker::no_eq]
     unavailabledialog: Controller<UnavailableDialogModel>,
     online: bool,
+    /// Package database that installs resolve against.
+    pkgdb: String,
 }
 
 #[derive(Debug)]
 pub enum UpdatePageMsg {
     UpdateConfig(NixDataConfig),
+    SetPkgDb(String),
     UpdatePkgTypes(SystemPkgs, UserPkgs),
     Update(Vec<UpdateItem>, Vec<UpdateItem>),
     OpenRow(usize, InstallType),
@@ -43,12 +44,10 @@ pub enum UpdatePageMsg {
     // UpdateSystemAndChannels,
     UpdateAll,
     UpdateAllRm(Vec<String>, Vec<String>),
-    DoneWorking,
-    FailedWorking,
     UpdateOnline(bool),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateType {
     System,
     User,
@@ -218,28 +217,23 @@ impl SimpleComponent for UpdatePageModel {
         root: &Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
-        let updateworker = UpdateAsyncHandler::builder()
-            .detach_worker(UpdateAsyncHandlerInit { syspkgs: initparams.systype.clone(), userpkgs: initparams.usertype.clone() })
-            .forward(sender.input_sender(), identity);
-
         let unavailabledialog = UnavailableDialogModel::builder()
             .launch_with_broker(initparams.window.clone(), &UNAVAILABLE_BROKER)
             .forward(sender.input_sender(), identity);
 
         let config = initparams.config;
-        updateworker.emit(UpdateAsyncHandlerMsg::UpdateConfig(config.clone()));
 
         let model = UpdatePageModel {
             updateuserlist: FactoryVecDeque::new(gtk::ListBox::new(), sender.input_sender()),
             updatesystemlist: FactoryVecDeque::new(gtk::ListBox::new(), sender.input_sender()),
             channelupdate: None,
             updatetracker: 0,
-            updateworker,
             config,
             systype: initparams.systype,
             usertype: initparams.usertype,
             unavailabledialog,
             online: initparams.online,
+            pkgdb: String::new(),
             tracker: 0,
         };
 
@@ -258,12 +252,13 @@ impl SimpleComponent for UpdatePageModel {
         match msg {
             UpdatePageMsg::UpdateConfig(config) => {
                 self.config = config;
-                self.updateworker.emit(UpdateAsyncHandlerMsg::UpdateConfig(self.config.clone()));
+            }
+            UpdatePageMsg::SetPkgDb(pkgdb) => {
+                self.pkgdb = pkgdb;
             }
             UpdatePageMsg::UpdatePkgTypes(systype, usertype) => {
                 self.systype = systype;
                 self.usertype = usertype;
-                self.updateworker.emit(UpdateAsyncHandlerMsg::UpdatePkgTypes(self.systype.clone(), self.usertype.clone()));
             }
             UpdatePageMsg::Update(updateuserlist, updatesystemlist) => {
                 info!("UpdatePageMsg::Update");
@@ -308,9 +303,8 @@ impl SimpleComponent for UpdatePageModel {
                 }
                 let systype = self.systype.clone();
                 let systemconfig = self.config.systemconfig.clone();
-                let workersender = self.updateworker.sender().clone();
+                let ctx = self.ctx();
                 let output = sender.output_sender().clone();
-                REBUILD_BROKER.send(RebuildMsg::Show);
                 relm4::spawn(async move {
                     let uninstallsys = match systype {
                         SystemPkgs::Legacy => {
@@ -322,7 +316,7 @@ impl SimpleComponent for UpdatePageModel {
                         _ => HashMap::new(),
                     };
                     if uninstallsys.is_empty() {
-                        workersender.send(UpdateAsyncHandlerMsg::UpdateSystem);
+                        queue_update(UpdateType::System, None, None, ctx, &output);
                     } else {
                         warn!("Uninstalling unavailable packages: {:?}", uninstallsys);
                         output.send(AppMsg::GetUnavailableItems(HashMap::new(), uninstallsys, UpdateType::System));
@@ -331,7 +325,7 @@ impl SimpleComponent for UpdatePageModel {
             }
             UpdatePageMsg::UpdateSystemRm(pkgs) => {
                 info!("UpdatePageMsg::UpdateSystemRm({:?})", pkgs);
-                self.updateworker.emit(UpdateAsyncHandlerMsg::UpdateSystemRemove(pkgs));
+                queue_update(UpdateType::System, None, Some(pkgs), self.ctx(), sender.output_sender());
             }
             UpdatePageMsg::UpdateUser(pkg) => {
                 info!("UPDATE USER PKG: {}", pkg);
@@ -344,27 +338,27 @@ impl SimpleComponent for UpdatePageModel {
                     self.online = false;
                     return;
                 }
-                REBUILD_BROKER.send(RebuildMsg::Show);
                 if self.usertype == UserPkgs::Profile {
-                    let workersender = self.updateworker.sender().clone();
+                    let ctx = self.ctx();
                     let output = sender.output_sender().clone();
+                    let pkgdb = self.pkgdb.clone();
                     relm4::spawn(async move {
-                        let uninstalluser = nix_data::cache::profile::unavailablepkgs().await.unwrap_or_default();
+                        let uninstalluser = userops::unavailable(&pkgdb).await;
                         if uninstalluser.is_empty() {
-                            workersender.send(UpdateAsyncHandlerMsg::UpdateUserPkgs);
+                            queue_update(UpdateType::User, None, None, ctx, &output);
                         } else {
                             warn!("Uninstalling unavailable packages: {:?}", uninstalluser);
                             output.send(AppMsg::GetUnavailableItems(uninstalluser, HashMap::new(), UpdateType::User));
                         }
                     });
-    
+
                 } else {
-                    self.updateworker.emit(UpdateAsyncHandlerMsg::UpdateUserPkgs);
+                    queue_update(UpdateType::User, None, None, self.ctx(), sender.output_sender());
                 }
             }
             UpdatePageMsg::UpdateAllUserRm(pkgs) => {
                 info!("UpdatePageMsg::UpdateAllUserRm({:?})", pkgs);
-                self.updateworker.emit(UpdateAsyncHandlerMsg::UpdateUserPkgsRemove(pkgs));
+                queue_update(UpdateType::User, Some(pkgs), None, self.ctx(), sender.output_sender());
             }
             UpdatePageMsg::UpdateAll => {
                 let online = util::checkonline();
@@ -377,9 +371,9 @@ impl SimpleComponent for UpdatePageModel {
                 let systype = self.systype.clone();
                 let usertype = self.usertype.clone();
                 let systemconfig = self.config.systemconfig.clone();
-                let workersender = self.updateworker.sender().clone();
+                let ctx = self.ctx();
                 let output = sender.output_sender().clone();
-                REBUILD_BROKER.send(RebuildMsg::Show);
+                let pkgdb = self.pkgdb.clone();
                 relm4::spawn(async move {
                     let uninstallsys = match systype {
                         SystemPkgs::Legacy => {
@@ -391,12 +385,12 @@ impl SimpleComponent for UpdatePageModel {
                         _ => HashMap::new(),
                     };
                     let uninstalluser = if usertype == UserPkgs::Profile {
-                        nix_data::cache::profile::unavailablepkgs().await.unwrap_or_default()
+                        userops::unavailable(&pkgdb).await
                     } else {
                         HashMap::new()
                     };
                     if uninstallsys.is_empty() && uninstalluser.is_empty() {
-                        workersender.send(UpdateAsyncHandlerMsg::UpdateAll);
+                        queue_update(UpdateType::All, None, None, ctx, &output);
                     } else {
                         warn!("Uninstalling unavailable user packages: {:?}", uninstalluser);
                         warn!("Uninstalling unavailable system packages: {:?}", uninstallsys);
@@ -406,20 +400,38 @@ impl SimpleComponent for UpdatePageModel {
             }
             UpdatePageMsg::UpdateAllRm(userpkgs, syspkgs) => {
                 info!("UpdatePageMsg::UpdateAllRm({:?}, {:?})", userpkgs, syspkgs);
-                self.updateworker.emit(UpdateAsyncHandlerMsg::UpdateAllRemove(userpkgs, syspkgs));
-            }
-            UpdatePageMsg::DoneWorking => {
-                let _ = nix_data::utils::refreshicons();
-                REBUILD_BROKER.send(RebuildMsg::FinishSuccess);
-                sender.output(AppMsg::UpdateInstalledPkgs);
-            }
-            UpdatePageMsg::FailedWorking => {
-                REBUILD_BROKER.send(RebuildMsg::FinishError(None));
+                queue_update(UpdateType::All, Some(userpkgs), Some(syspkgs), self.ctx(), sender.output_sender());
             }
             UpdatePageMsg::UpdateOnline(online) => {
                 self.set_online(online);
             }
         }
+    }
+}
+
+impl UpdatePageModel {
+    fn ctx(&self) -> userops::Ctx {
+        userops::Ctx {
+            config: self.config.clone(),
+            syspkgs: self.systype.clone(),
+            userpkgs: self.usertype.clone(),
+        }
+    }
+}
+
+/// Queues an update and tells the window, which toasts it. The online and
+/// unavailable-package checks have already happened.
+fn queue_update(
+    scope: UpdateType,
+    rm_user: Option<Vec<String>>,
+    rm_sys: Option<Vec<String>>,
+    ctx: userops::Ctx,
+    out: &relm4::Sender<AppMsg>,
+) {
+    let update = UpdateJob { scope, rm_user, rm_sys };
+    let title = update.title();
+    if userops::enqueue_update(update, ctx) {
+        out.emit(AppMsg::UpdateQueued(format!("{title} queued")));
     }
 }
 
@@ -504,6 +516,17 @@ impl FactoryComponent for UpdateItemModel {
                     gtk::Label {
                         set_halign: gtk::Align::Start,
                         set_label: self.item.name.as_str(),
+                        set_ellipsize: pango::EllipsizeMode::End,
+                        set_lines: 1,
+                        set_wrap: true,
+                        set_max_width_chars: 0,
+                    },
+                    gtk::Label {
+                        set_halign: gtk::Align::Start,
+                        add_css_class: "dim-label",
+                        add_css_class: "caption",
+                        set_label: &super::sourceinfo::badges(self.item.pkg.as_deref().unwrap_or(&self.item.pname)).unwrap_or_default(),
+                        set_visible: super::sourceinfo::badges(self.item.pkg.as_deref().unwrap_or(&self.item.pname)).is_some(),
                         set_ellipsize: pango::EllipsizeMode::End,
                         set_lines: 1,
                         set_wrap: true,
