@@ -9,5 +9,6 @@ pub mod progress;
 pub mod queue;
 pub mod run;
 pub mod sources;
+pub mod system_manifest;
 
 pub use anyhow::Result;
