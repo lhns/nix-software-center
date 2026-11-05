@@ -8,10 +8,7 @@ use nsc_backend::sources::{self, Source};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Duration,
 };
-
-const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct SourcesGroup {
     pub group: adw::PreferencesGroup,
@@ -273,7 +270,7 @@ impl SourcesGroup {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         relm4::spawn(async move {
             for (id, flake) in todo {
-                if let Err(e) = sources::fetch(&id, &flake, FETCH_TIMEOUT).await {
+                if let Err(e) = sources::fetch(&id, &flake, sources::FETCH_TIMEOUT).await {
                     log::warn!("source {id}: {e}");
                 }
             }

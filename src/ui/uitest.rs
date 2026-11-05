@@ -1,9 +1,9 @@
-//! CI hook: with `NSC_UI_TEST=<dir>` the app seeds the queue with one entry in
-//! each state, walks through the Activity tab and its modal while writing
-//! screenshots of its own window to `<dir>`, then quits. No runner starts, so
-//! the entries stay as seeded. It then walks the Sources page, the Add Source and consent dialogs
-//! the unfree labels and, with a seeded `NSC_SYSTEM_MANIFEST`, the included-with-desktop labels; with `NSC_SYSTEM_PACKAGES=0` it only shows the main window and the
-//! preferences.
+//! CI hook: with `NSC_UI_TEST=<dir>` the app seeds the queue with one entry in each state, walks
+//! through the Activity tab and its modal while writing screenshots of its own window to `<dir>`,
+//! then quits. No runner starts, so the entries stay as seeded. It then walks the Sources page,
+//! the Add Source and consent dialogs, the unfree labels and, with a seeded `NSC_SYSTEM_MANIFEST`,
+//! the included-with-desktop labels. With `NSC_SYSTEM_PACKAGES=0` it only shows the main window
+//! and the preferences.
 
 use super::{
     activitylog::LogMsg,

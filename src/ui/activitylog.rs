@@ -66,7 +66,6 @@ pub fn hide_on_escape(window: &impl IsA<gtk::Widget>) {
     window.add_controller(key);
 }
 
-/// Last non-empty line, cut to one readable line.
 /// The one-line state of an entry, for the Activity row and the log modal.
 pub fn state_text(e: &Entry<Job>) -> String {
     match &e.state {
@@ -82,6 +81,7 @@ pub fn state_text(e: &Entry<Job>) -> String {
     }
 }
 
+/// Last non-empty line, cut to one readable line.
 pub fn last_line(text: &str) -> String {
     let line = text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     let mut short: String = line.chars().take(160).collect();

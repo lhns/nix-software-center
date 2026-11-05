@@ -38,7 +38,6 @@ async fn nix() -> &'static Nix {
     NIX.get_or_init(|| detected)
 }
 
-
 /// Installed profile entries as `key -> version`, keys as upstream names them.
 /// Version: package database for nixpkgs entries, else the store path's.
 pub async fn installed_versions(pkgdb_path: &str) -> Result<HashMap<String, String>> {
@@ -87,7 +86,6 @@ async fn element_names(keys: &[String]) -> Result<Vec<String>> {
     }
     Ok(names)
 }
-
 
 /// Settings a job runs with, as they are when it is queued.
 #[derive(Clone)]
@@ -312,9 +310,13 @@ pub fn has_running() -> bool {
     with_queue(|q| q.running().is_some())
 }
 
-/// Drops everything waiting and asks the running batch to stop.
+/// Drops everything waiting and asks the running batch to stop, if it can be stopped; flagging
+/// one that cannot would report its own failure as a cancel.
 pub fn stop_all() {
-    let (gone, cancel) = with_state(|s| (s.queue.cancel_all_queued(), s.cancel.clone()));
+    let (gone, cancel) = with_state(|s| {
+        let stoppable = s.queue.running().map_or(false, |b| b.items.iter().all(|i| i.payload.cancellable()));
+        (s.queue.cancel_all_queued(), s.cancel.clone().filter(|_| stoppable))
+    });
     for item in &gone {
         finished(&item.payload, false);
     }

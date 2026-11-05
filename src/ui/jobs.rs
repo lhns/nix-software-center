@@ -11,7 +11,7 @@ use anyhow::{anyhow, Result};
 use log::*;
 use nix_data::config::configfile::NixDataConfig;
 use nsc_backend::run::Cancel;
-use std::{fs, path::Path, process::Stdio};
+use std::{fs, process::Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 /// Where a job's output lines go.
@@ -55,20 +55,11 @@ impl Job {
         matches!(&self.kind, JobKind::Pkg(w) if w.action == PkgAction::Remove)
     }
 
-    /// Name of the package, for titles.
-    fn name(w: &WorkPkg) -> &str {
-        if w.pname.is_empty() {
-            &w.pkg
-        } else {
-            &w.pname
-        }
-    }
-
     pub fn title(&self) -> String {
         match &self.kind {
             JobKind::Pkg(w) => {
                 let what = if w.action == PkgAction::Install { "Install" } else { "Remove" };
-                format!("{what} {}", Self::name(w))
+                format!("{what} {}", w.display_name())
             }
             JobKind::Update(u) => u.title().to_string(),
         }
@@ -105,6 +96,39 @@ impl Job {
                 _ => false,
             },
         }
+    }
+}
+
+/// `nsc-helper` next to the app's `libexec`, else the one on `PATH`.
+fn helper_path() -> String {
+    if let Ok(mut e) = std::env::current_exe() {
+        e.pop(); // root/bin
+        e.pop(); // root/
+        e.push("libexec");
+        e.push("nsc-helper");
+        if e.is_file() {
+            return e.to_string_lossy().into_owned();
+        }
+    }
+    String::from("nsc-helper")
+}
+
+/// `flake` or `flake#arg` from the nix-data config.
+fn flake_target(config: &NixDataConfig) -> Option<String> {
+    let flake = config.flake.as_ref()?;
+    Some(match &config.flakearg {
+        Some(arg) => format!("{flake}#{arg}"),
+        None => flake.clone(),
+    })
+}
+
+/// Sends the child's stderr lines to `sink` until it closes.
+async fn forward_stderr(child: &mut tokio::process::Child, sink: Sink<'_>) {
+    let Some(stderr) = child.stderr.take() else { return };
+    let mut lines = tokio::io::BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        trace!("child line: {}", line);
+        sink(line);
     }
 }
 
@@ -151,18 +175,11 @@ async fn envop(work: &WorkPkg, sink: Sink<'_>) -> Result<bool> {
     };
     let mut p = cmd
         .kill_on_drop(true)
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let stderr = p.stderr.take().unwrap();
-    let reader = tokio::io::BufReader::new(stderr);
-
-    let mut lines = reader.lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        trace!("CAUGHT LINE: {}", line);
-        sink(line);
-    }
+    forward_stderr(&mut p, sink).await;
     Ok(p.wait().await?.success())
 }
 
@@ -173,16 +190,8 @@ async fn installsys(
     sink: Sink<'_>,
 ) -> Result<bool> {
     let _lock = nsc_backend::run::lock().await;
-    let systemconfig = config.systemconfig.unwrap_or_default();
-    let flakeargs = if let Some(flake) = config.flake {
-        if let Some(flakearg) = config.flakearg {
-            Some(format!("{}#{}", flake, flakearg))
-        } else {
-            Some(flake)
-        }
-    } else {
-        None
-    };
+    let flakeargs = flake_target(&config);
+    let systemconfig = config.systemconfig.clone().unwrap_or_default();
     let mut p = pkg;
     let f = fs::read_to_string(&systemconfig)?;
     if let Ok(s) = nix_editor::read::getwithvalue(&f, "environment.systemPackages") {
@@ -212,22 +221,7 @@ async fn installsys(
         }
     };
 
-    let exe = match std::env::current_exe() {
-        Ok(mut e) => {
-            e.pop(); // root/bin
-            e.pop(); // root/
-            e.push("libexec"); // root/libexec
-            e.push("nsc-helper");
-            let x = e.to_string_lossy().to_string();
-            info!("nsc-helper path: {}", x);
-            if Path::new(&x).is_file() {
-                x
-            } else {
-                String::from("nsc-helper")
-            }
-        }
-        Err(_) => String::from("nsc-helper"),
-    };
+    let exe = helper_path();
 
     let rebuildargs = if let Some(x) = flakeargs {
         let mut v = vec![String::from("--flake")];
@@ -257,19 +251,8 @@ async fn installsys(
         .spawn()?;
 
     cmd.stdin.take().unwrap().write_all(out.as_bytes()).await?;
-    let stderr = cmd.stderr.take().unwrap();
-    let reader = tokio::io::BufReader::new(stderr);
-
-    let mut lines = reader.lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        trace!("CAUGHT LINE: {}", line);
-        sink(line);
-    }
-    if cmd.wait().await?.success() {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    forward_stderr(&mut cmd, sink).await;
+    Ok(cmd.wait().await?.success())
 }
 
 async fn runcmd(
@@ -282,33 +265,10 @@ async fn runcmd(
         return Ok(true);
     }
     let _lock = nsc_backend::run::lock().await;
-    let systemconfig = config.systemconfig.unwrap_or_default();
-    let flakeargs = if let Some(flake) = config.flake {
-        if let Some(flakearg) = config.flakearg {
-            Some(format!("{}#{}", flake, flakearg))
-        } else {
-            Some(flake)
-        }
-    } else {
-        None
-    };
+    let flakeargs = flake_target(&config);
+    let systemconfig = config.systemconfig.clone().unwrap_or_default();
     let f = fs::read_to_string(&systemconfig)?;
-    let exe = match std::env::current_exe() {
-        Ok(mut e) => {
-            e.pop(); // root/bin
-            e.pop(); // root/
-            e.push("libexec"); // root/libexec
-            e.push("nsc-helper");
-            let x = e.to_string_lossy().to_string();
-            info!("nsc-helper path: {}", x);
-            if Path::new(&x).is_file() {
-                x
-            } else {
-                String::from("nsc-helper")
-            }
-        }
-        Err(_) => String::from("nsc-helper"),
-    };
+    let exe = helper_path();
 
     let flakepathsplit = flakeargs.clone().unwrap_or_default().to_string();
     let flakepath = flakepathsplit
@@ -430,19 +390,8 @@ async fn runcmd(
         SystemPkgs::None => return Ok(true),
     };
 
-    let stderr = cmd.stderr.take().unwrap();
-    let reader = tokio::io::BufReader::new(stderr);
-
-    let mut lines = reader.lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        trace!("CAUGHT REBUILD LINE: {}", line);
-        sink(line);
-    }
-    if cmd.wait().await?.success() {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    forward_stderr(&mut cmd, sink).await;
+    Ok(cmd.wait().await?.success())
 }
 
 async fn updateenv(sink: Sink<'_>) -> Result<bool> {
@@ -452,17 +401,6 @@ async fn updateenv(sink: Sink<'_>) -> Result<bool> {
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let stderr = cmd.stderr.take().unwrap();
-    let reader = tokio::io::BufReader::new(stderr);
-
-    let mut lines = reader.lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        trace!("CAUGHT NIXENV LINE: {}", line);
-        sink(line);
-    }
-    if cmd.wait().await?.success() {
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    forward_stderr(&mut cmd, sink).await;
+    Ok(cmd.wait().await?.success())
 }
