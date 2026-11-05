@@ -3,6 +3,8 @@
 //!
 //! Usage: nsc-backend-smoke <installable>... [--pkgdb <file>] [--require-progress]
 //! `--pkgdb` defaults to $NSC_PKGDB.
+//! `--system-manifest <file>` instead prints how each entry of a system manifest matches the
+//! package database (no installables, no nix).
 
 use anyhow::{bail, Context, Result};
 use nsc_backend::run::{Cancel, Event, Stream};
@@ -25,20 +27,39 @@ async fn names(nix: &ops::Nix) -> Result<HashSet<String>> {
     Ok(profile::list(nix).await?.into_iter().map(|e| e.name).collect())
 }
 
+async fn match_report(manifest: &std::path::Path, db: PathBuf) -> Result<()> {
+    let entries = nsc_backend::system_manifest::read(manifest).map_err(anyhow::Error::msg)?;
+    let pool = pkgdb::connect(&db).await?;
+    let mut matched = 0;
+    for e in &entries {
+        let mut attrs: Vec<_> = nsc_backend::system_manifest::resolve(&pool, std::slice::from_ref(e)).await.into_iter().collect();
+        attrs.sort();
+        matched += !attrs.is_empty() as usize;
+        println!("match: {} {} -> [{}]", e.pname, e.version, attrs.join(" "));
+    }
+    println!("matched {matched} of {} entries", entries.len());
+    Ok(())
+}
+
 async fn real_main() -> Result<()> {
     let mut installables: Vec<String> = vec![];
     let mut pkgdb_path = None;
     let mut require_progress = false;
+    let mut manifest = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--pkgdb" => pkgdb_path = Some(PathBuf::from(it.next().context("--pkgdb needs a file")?)),
             "--require-progress" => require_progress = true,
+            "--system-manifest" => manifest = Some(PathBuf::from(it.next().context("--system-manifest needs a file")?)),
             _ if a.starts_with("--") => bail!("unexpected argument {a}"),
             _ => installables.push(a),
         }
     }
     let pkgdb_path = pkgdb_path.or_else(|| std::env::var_os("NSC_PKGDB").map(PathBuf::from));
+    if let Some(m) = manifest {
+        return match_report(&m, pkgdb_path.context("--system-manifest needs --pkgdb or $NSC_PKGDB")?).await;
+    }
     if installables.is_empty() {
         bail!("usage: nsc-backend-smoke <installable>... [--pkgdb <file>] [--require-progress]");
     }
