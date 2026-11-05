@@ -8,9 +8,9 @@ use std::{collections::HashSet, sync::OnceLock};
 static INCLUDED: OnceLock<HashSet<String>> = OnceLock::new();
 
 pub async fn load(pool: &SqlitePool) {
-    let Some(names) = system_manifest::from_env() else { return };
-    let attrs = system_manifest::resolve(pool, &names).await;
-    log::info!("system manifest: {} entries, {} catalogue apps included with the desktop", names.len(), attrs.len());
+    let Some(entries) = system_manifest::from_env() else { return };
+    let attrs = system_manifest::resolve(pool, &entries).await;
+    log::info!("system manifest: {} entries, {} catalogue apps included with the desktop", entries.len(), attrs.len());
     let _ = INCLUDED.set(attrs);
 }
 

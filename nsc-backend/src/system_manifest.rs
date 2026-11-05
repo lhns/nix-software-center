@@ -5,8 +5,8 @@
 //! {"packages": [{"pname": "dolphin", "version": "24.02", "path": "/nix/store/…-dolphin-24.02"}]}
 //! ```
 //!
-//! Matching is by `pname` against the built-in catalogue: the catalogue has no store paths
-//! (computing them means instantiating every derivation), so `path` is informational. Only
+//! Matching is by `pname` and `version` against the built-in catalogue (see `pick`): the catalogue
+//! has no store paths (computing them means instantiating every derivation), so `path` is informational. Only
 //! built-in attributes match; a third-party source's `<id>:<attr>` never does. The file is
 //! untrusted input: size-capped, parsed leniently, bound as SQL parameters only.
 
@@ -25,24 +25,35 @@ struct File {
     packages: Vec<serde_json::Value>,
 }
 
-/// Distinct package names of the manifest; entries without a usable `pname` are skipped.
-pub fn parse(json: &str) -> Result<Vec<String>, String> {
+/// One manifest entry: the package name and, when the manifest has one, its version.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Entry {
+    pub pname: String,
+    pub version: String,
+}
+
+fn text(p: &serde_json::Value, key: &str) -> Option<String> {
+    let v = p.get(key)?.as_str()?;
+    (v.len() <= MAX_NAME && !v.chars().any(char::is_control)).then(|| v.to_string())
+}
+
+/// Distinct entries of the manifest; those without a usable `pname` are skipped, a missing or
+/// unusable `version` becomes empty.
+pub fn parse(json: &str) -> Result<Vec<Entry>, String> {
     let file: File = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for p in file.packages {
-        let Some(name) = p.get("pname").and_then(|n| n.as_str()) else { continue };
-        if name.is_empty() || name.len() > MAX_NAME || name.chars().any(char::is_control) {
-            continue;
-        }
-        if seen.insert(name.to_string()) {
-            out.push(name.to_string());
+        let Some(pname) = text(&p, "pname").filter(|n| !n.is_empty()) else { continue };
+        let e = Entry { pname, version: text(&p, "version").unwrap_or_default() };
+        if seen.insert(e.clone()) {
+            out.push(e);
         }
     }
     Ok(out)
 }
 
-pub fn read(path: &Path) -> Result<Vec<String>, String> {
+pub fn read(path: &Path) -> Result<Vec<Entry>, String> {
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if meta.len() > MAX_BYTES {
         return Err(format!("{} bytes is over the {MAX_BYTES} limit", meta.len()));
@@ -50,12 +61,12 @@ pub fn read(path: &Path) -> Result<Vec<String>, String> {
     parse(&std::fs::read_to_string(path).map_err(|e| e.to_string())?)
 }
 
-/// Names from `$NSC_SYSTEM_MANIFEST`. Unset or empty: the feature is off, silently. Set but
+/// Entries from `$NSC_SYSTEM_MANIFEST`. Unset or empty: the feature is off, silently. Set but
 /// unreadable or malformed: off, with a warning.
-pub fn from_env() -> Option<Vec<String>> {
+pub fn from_env() -> Option<Vec<Entry>> {
     let path = std::env::var_os(ENV).filter(|v| !v.is_empty())?;
     match read(Path::new(&path)) {
-        Ok(names) => Some(names),
+        Ok(entries) => Some(entries),
         Err(e) => {
             log::warn!("Ignoring {ENV}={}: {e}", Path::new(&path).display());
             None
@@ -63,28 +74,42 @@ pub fn from_env() -> Option<Vec<String>> {
     }
 }
 
-/// Built-in catalogue attributes for the names. Several attributes can share a `pname`
-/// (`git`, `gitMinimal`): those whose last path component is the name win, else all match.
-pub async fn resolve(pool: &SqlitePool, names: &[String]) -> HashSet<String> {
+/// Picks the catalogue attributes for one entry from the candidates sharing its `pname`, as
+/// `(attribute, version)`. Candidates with the manifest's version win; with none, a lone
+/// candidate still matches (the image patched the package) and several match nothing rather
+/// than a guess. Then top-level attributes win over set members (`git` over `haskellPackages.git`),
+/// then those whose last component is the `pname`.
+pub fn pick(entry: &Entry, mut cands: Vec<(String, String)>) -> Vec<String> {
+    let same: Vec<_> = cands.iter().filter(|c| !entry.version.is_empty() && c.1 == entry.version).cloned().collect();
+    if !same.is_empty() {
+        cands = same;
+    } else if cands.len() != 1 {
+        return Vec::new();
+    }
+    let mut attrs: Vec<String> = cands.into_iter().map(|c| c.0).collect();
+    let top: Vec<_> = attrs.iter().filter(|a| !a.contains('.')).cloned().collect();
+    if !top.is_empty() {
+        attrs = top;
+    }
+    let named: Vec<_> = attrs.iter().filter(|a| a.rsplit('.').next() == Some(entry.pname.as_str())).cloned().collect();
+    if !named.is_empty() {
+        attrs = named;
+    }
+    attrs
+}
+
+/// Built-in catalogue attributes for the entries (see `pick`). Third-party attributes never match.
+pub async fn resolve(pool: &SqlitePool, entries: &[Entry]) -> HashSet<String> {
     let mut out = HashSet::new();
-    for name in names {
-        let rows: Result<Vec<(String,)>, _> =
-            sqlx::query_as("SELECT attribute FROM pkgs WHERE pname = $1 AND instr(attribute, ':') = 0")
-                .bind(name)
+    for e in entries {
+        let rows: Result<Vec<(String, String)>, _> =
+            sqlx::query_as("SELECT attribute, version FROM pkgs WHERE pname = $1 AND instr(attribute, ':') = 0")
+                .bind(&e.pname)
                 .fetch_all(pool)
                 .await;
-        let attrs: Vec<String> = match rows {
-            Ok(r) => r.into_iter().map(|r| r.0).collect(),
-            Err(e) => {
-                log::warn!("system manifest lookup of {name}: {e}");
-                continue;
-            }
-        };
-        let exact: Vec<&String> = attrs.iter().filter(|a| a.rsplit('.').next() == Some(name.as_str())).collect();
-        if exact.is_empty() {
-            out.extend(attrs);
-        } else {
-            out.extend(exact.into_iter().cloned());
+        match rows {
+            Ok(r) => out.extend(pick(e, r)),
+            Err(err) => log::warn!("system manifest lookup of {}: {err}", e.pname),
         }
     }
     out
