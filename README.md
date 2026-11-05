@@ -17,6 +17,12 @@ A graphical app store for Nix built with [libadwaita](https://gitlab.gnome.org/G
 
 </div>
 
+> [!NOTE]
+> **This is a fork** of [snowfallorg/nix-software-center](https://github.com/snowfallorg/nix-software-center)
+> (based on `181c1c6`), maintained for the per-user desktops of
+> [kube-webtop-workspaces](https://github.com/lhns/kube-webtop-workspaces). Changes are small topic
+> commits; the NixOS-config and `nix-env` modes are kept unchanged. See [Fork changes](#fork-changes).
+
 # Features
 - Install packages to `configuration.nix`
   - Flakes support can be enabled in the preferences menu
@@ -128,3 +134,34 @@ Some icons in [data/icons](data/icons/) contains assets from [GNOME Software](ht
 [matrix]: https://matrix.to/#/#snowflakeos:matrix.org
 [discord badge]: https://img.shields.io/discord/1021080090676842506?color=7289da&label=Discord&logo=discord&logoColor=ffffff&style=for-the-badge
 [discord]: https://discord.gg/6rWNMmdkgT
+
+# Fork changes
+
+All in `nix profile` mode unless noted; the other modes behave as upstream.
+
+- **Listing** from `nix profile list --json` (v3, element names, declared elements with
+  `storePaths: []`), instead of reading `manifest.json`. Falls back to the old reader on Nix
+  without `list --json`.
+- **Add, remove, upgrade** with `nix profile add` (falls back to `install`), `remove <element>`
+  and `upgrade --all`/`upgrade <element>`; no hardcoded `x86_64-linux`.
+- **Operations** show live output and structured progress (Nix's `json-log-path`, through a unix
+  socket in `NIX_CONFIG`), report the exit code, run one at a time app-wide, and cancel with
+  SIGINT to the process group so Nix can revert. The stdout pipe no longer deadlocks.
+- **Package index**: `NSC_PKGDB` points at a SQLite index in nix-data's schema, which
+  `nix/pkgdb.nix` generates at build time from a given nixpkgs (per system, no unfree), instead
+  of downloading nix-data-db.
+- **AppStream data** from [snowfallorg/nixos-appstream-data](https://github.com/snowfallorg/nixos-appstream-data).
+- **Fixes**: no crash on installed entries missing from the index; the "Open" button for
+  terminal apps (PATH lookup instead of running the `command` builtin); the terminal comes from
+  `$TERMINAL`/`xdg-terminal-exec`/installed terminals instead of `kgx`; `NSC_ONLINE_CHECK_URL`
+  overrides (or, empty, disables) the `nmcheck.gnome.org` check; no gtksourceview5.
+- **Activity tab**: one app-wide queue for installs, removals and updates, with a log modal per
+  entry, retry and cancel. Profile installs and removals run as batches.
+- **Package sources**: flakes that publish a catalogue, managed under Preferences (Sources), with
+  an "nixpkgs unfree" built-in and a consent dialog for unfree apps.
+- **Included with desktop**: `NSC_SYSTEM_MANIFEST` marks apps the system image already ships.
+- `nsc-backend/`: the GTK-free backend with unit tests, and `nsc-backend-smoke`, a headless
+  smoke test of the same functions (installed to `libexec/nix-software-center/`).
+- How it ships in the desktops: [docs/integration.md](docs/integration.md).
+
+The license stays GPL-3.0, as upstream.
