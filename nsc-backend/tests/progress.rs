@@ -139,3 +139,31 @@ fn label_says_evaluating_until_totals_arrive() {
     s.downloads = (0, 3);
     assert_eq!(s.label(), "evaluating 'x' — builds 1/2 — downloads 0/3");
 }
+
+#[test]
+fn applying_once_every_activity_has_stopped() {
+    let mut tree = Tree::default();
+    let applying = |t: &Tree| t.summary().applying;
+    assert!(!applying(&tree), "nothing reported yet is still evaluating");
+    feed(&mut tree, &start(1, 0, 0, "evaluating"));
+    assert!(!applying(&tree));
+    feed(&mut tree, &start(2, 0, 104, "builds"));
+    feed(&mut tree, &progress(2, 0, 1));
+    feed(&mut tree, &stop(1));
+    assert!(!applying(&tree), "a build is still running");
+    feed(&mut tree, &progress(2, 1, 1));
+    feed(&mut tree, &stop(2));
+    let s = tree.summary();
+    assert!(s.applying);
+    assert_eq!(s.label(), "Applying…");
+    feed(&mut tree, &start(3, 0, 0, "running hook"));
+    assert!(!applying(&tree), "new activity ends the state");
+    assert!(tree.summary().label().starts_with("running hook"));
+}
+
+#[test]
+fn recorded_run_ends_applying() {
+    let mut tree = Tree::default();
+    feed(&mut tree, &fixture("recorded-2.34.9-profile-add.jsonl"));
+    assert!(tree.summary().applying);
+}

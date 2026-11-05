@@ -185,3 +185,24 @@ async fn cleanup_keeps_another_instances_temp_file() {
     assert!(other_tmp.exists(), "another instance's in-flight file was deleted");
     assert!(!old.exists(), "an outdated merged database should go");
 }
+
+#[test]
+fn stale_tmp_files_go_but_younger_ones_stay() {
+    use nsc_backend::catalogue::{remove_stale_tmp, TMP_MAX_AGE};
+    let d = tempfile::tempdir().unwrap();
+    let age = |name: &str, by: std::time::Duration| {
+        let p = d.path().join(name);
+        std::fs::write(&p, b"x").unwrap();
+        let f = std::fs::File::options().write(true).open(&p).unwrap();
+        f.set_modified(std::time::SystemTime::now() - by).unwrap();
+        p
+    };
+    let hour = std::time::Duration::from_secs(3600);
+    let old = age("merged-tmp-1.db", TMP_MAX_AGE + hour);
+    let young = age("merged-tmp-2.db", TMP_MAX_AGE - hour);
+    let fresh = age("merged-tmp-3.db", std::time::Duration::ZERO);
+    let other = age("other.db", TMP_MAX_AGE + hour);
+    remove_stale_tmp(d.path(), TMP_MAX_AGE);
+    assert!(!old.exists());
+    assert!(young.exists() && fresh.exists() && other.exists());
+}

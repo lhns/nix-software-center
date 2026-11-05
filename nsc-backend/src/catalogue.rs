@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 use sqlx::{ConnectOptions, Connection, SqliteConnection};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub const CATALOGUE_VERSION: &str = "1";
 /// The catalogue file inside a source's `nscCatalogue.<system>` directory.
@@ -64,12 +65,36 @@ fn is_merged_name(n: &str) -> bool {
         .map_or(false, |h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
+/// Leftovers of instances that died mid-merge. Age-gated so a running instance's file is safe.
+pub const TMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
+pub fn remove_stale_tmp(dir: &Path, max_age: Duration) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let n = e.file_name();
+        let n = n.to_string_lossy();
+        if !(n.starts_with("merged-tmp-") && n.ends_with(".db")) {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map_or(false, |age| age > max_age);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
 }
 
 pub async fn merge(dir: &Path, builtin: Option<&Builtin>, third: &[Third]) -> Result<Merged> {
     std::fs::create_dir_all(dir)?;
+    remove_stale_tmp(dir, TMP_MAX_AGE);
     let path = merged_path(dir, builtin, third);
     if path.exists() {
         if let Ok(m) = read_report(&path).await {
