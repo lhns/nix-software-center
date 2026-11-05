@@ -14,7 +14,7 @@
   # Whether "nixpkgs unfree" is listed until the user toggles it (NSC_UNFREE_LISTED_DEFAULT); null = yes.
   unfreeListedDefault ? null,
   # Adds the screenshot hooks of src/ui/uitest.rs; only for the CI UI run.
-  uitest ? false,
+  withUiTestHooks ? false,
 }:
 pkgs.stdenv.mkDerivation {
   pname = "nix-software-center";
@@ -61,7 +61,7 @@ pkgs.stdenv.mkDerivation {
     nixos-appstream-data
   ];
 
-  mesonFlags = lib.optional uitest "-Duitest=true";
+  mesonFlags = lib.optional withUiTestHooks "-Duitest=true";
 
   patchPhase = ''
     substituteInPlace ./src/lib.rs \

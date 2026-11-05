@@ -5,7 +5,7 @@ const HOSTILE: &str = "x'; touch /tmp/nsc-pwn; echo '$(id)`id`\"";
 #[test]
 fn quote_survives_single_quotes() {
     assert_eq!(quote("a b"), "'a b'");
-    assert_eq!(quote("it's"), "'it'\''s'");
+    assert_eq!(quote("it's"), "'it'\\''s'");
 }
 
 #[test]

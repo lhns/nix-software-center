@@ -3,7 +3,7 @@
 
 /// Single-quoted for a POSIX shell.
 pub fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\''"))
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// The `bash -c` script that starts a GTK app by desktop ID with the package's
