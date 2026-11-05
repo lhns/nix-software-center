@@ -6,6 +6,7 @@ pub mod ops;
 pub mod pkgdb;
 pub mod profile;
 pub mod progress;
+pub mod queue;
 pub mod run;
 pub mod sources;
 
