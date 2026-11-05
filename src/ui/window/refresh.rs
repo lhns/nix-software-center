@@ -11,7 +11,7 @@ pub(super) fn refresh_stale(input: relm4::Sender<AppMsg>) {
     }
     relm4::spawn(async move {
         let mut changed = false;
-        for s in super::sourceinfo::store().sources().into_iter().filter(|s| !s.builtin && s.enabled) {
+        for s in crate::ui::sourceinfo::store().sources().into_iter().filter(|s| !s.builtin && s.enabled) {
             if !sources::stale(&s.id, sources::STALE_AFTER) {
                 continue;
             }
