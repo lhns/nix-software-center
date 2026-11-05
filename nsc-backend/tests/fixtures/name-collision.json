@@ -1,0 +1,4 @@
+{"elements":{
+ "hello":{"active":true,"attrPath":"legacyPackages.x86_64-linux.hello","originalUrl":"flake:nixpkgs","url":"flake:nixpkgs","outputs":["out"],"priority":5,"storePaths":["/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-hello-2.12.1"]},
+ "hello-1":{"active":true,"attrPath":"legacyPackages.x86_64-linux.hello","originalUrl":"github:other/nixpkgs","url":"github:other/nixpkgs","outputs":["out"],"priority":5,"storePaths":["/nix/store/ffffffffffffffffffffffffffffffff-hello-2.10"]}
+},"version":3}

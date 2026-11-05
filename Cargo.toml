@@ -36,5 +36,5 @@ spdx = "0.10"
 anyhow = "1.0"
 
 [workspace]
-members = [".", "nsc-helper"]
-default-members = [".", "nsc-helper"]
+members = [".", "nsc-helper", "nsc-backend"]
+default-members = [".", "nsc-helper", "nsc-backend"]
