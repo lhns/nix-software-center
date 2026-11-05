@@ -30,6 +30,10 @@ else
   message('Building in debug mode')
 endif
 
+if get_option('uitest')
+  cargo_options += [ '--features', 'uitest' ]
+endif
+
 cargo_env = [ 'CARGO_HOME=' + meson.project_build_root() / 'cargo-home' ]
 
 cargo_build = custom_target(

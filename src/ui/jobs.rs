@@ -10,7 +10,7 @@ use super::{
 use anyhow::{anyhow, Result};
 use log::*;
 use nix_data::config::configfile::NixDataConfig;
-use nsc_backend::run::Cancel;
+use nsc_backend::{helper, run::Cancel};
 use std::{fs, process::Stdio};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
@@ -221,38 +221,30 @@ async fn installsys(
         }
     };
 
-    let exe = helper_path();
-
-    let rebuildargs = if let Some(x) = flakeargs {
-        let mut v = vec![String::from("--flake")];
-        for arg in x.split(' ') {
-            if !arg.is_empty() {
-                v.push(String::from(arg));
-            }
-        }
-        v
-    } else {
-        vec![]
+    let call = helper::Call {
+        mode: "config",
+        generations: config.generations.unwrap_or(0),
+        output: Some(&systemconfig),
+        impure: true,
+        rebuild_args: helper::rebuild_args(flakeargs.as_deref()),
+        ..Default::default()
     };
+    run_helper(&call, Some(out), sink).await
+}
 
-    let mut cmd = tokio::process::Command::new("pkexec")
-        .arg(&exe)
-        .arg("config")
-        .arg("--generations")
-        .arg(config.generations.unwrap_or(0).to_string())
-        .arg("--output")
-        .arg(&systemconfig)
-        .arg("--")
-        .arg("switch")
-        .arg("--impure")
-        .args(&rebuildargs)
-        .stderr(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()?;
-
-    cmd.stdin.take().unwrap().write_all(out.as_bytes()).await?;
-    forward_stderr(&mut cmd, sink).await;
-    Ok(cmd.wait().await?.success())
+/// Runs `pkexec nsc-helper` with `stdin` as the new configuration, if any; stderr goes to `sink`.
+async fn run_helper(call: &helper::Call<'_>, stdin: Option<String>, sink: Sink<'_>) -> Result<bool> {
+    let mut cmd = tokio::process::Command::new("pkexec");
+    cmd.arg(helper_path()).args(call.args()).stderr(Stdio::piped());
+    if stdin.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd.spawn()?;
+    if let Some(text) = stdin {
+        child.stdin.take().unwrap().write_all(text.as_bytes()).await?;
+    }
+    forward_stderr(&mut child, sink).await;
+    Ok(child.wait().await?.success())
 }
 
 async fn runcmd(
@@ -267,131 +259,31 @@ async fn runcmd(
     let _lock = nsc_backend::run::lock().await;
     let flakeargs = flake_target(&config);
     let systemconfig = config.systemconfig.clone().unwrap_or_default();
-    let f = fs::read_to_string(&systemconfig)?;
-    let exe = helper_path();
+    let flakepath = flakeargs.as_deref().and_then(|f| f.split('#').next()).unwrap_or_default().to_string();
 
-    let flakepathsplit = flakeargs.clone().unwrap_or_default().to_string();
-    let flakepath = flakepathsplit
-        .split('#')
-        .collect::<Vec<&str>>()
-        .first()
-        .cloned()
-        .unwrap_or_default();
-
-    let rebuildargs = if let Some(x) = flakeargs {
-        let mut v = vec![String::from("--flake")];
-        for arg in x.split(' ') {
-            if !arg.is_empty() {
-                v.push(String::from(arg));
-            }
-        }
-        v
-    } else {
-        vec![]
+    let flake = syspkgs == SystemPkgs::Flake;
+    let call = helper::Call {
+        mode: if flake { "flake" } else { "channel" },
+        rebuild: true,
+        flakepath: flake.then_some(flakepath.as_str()),
+        update: rmpkgs.is_some(),
+        generations: config.generations.unwrap_or(0),
+        // The flake helper wants the path even when it has no new configuration for it.
+        output: (flake || rmpkgs.is_some()).then_some(systemconfig.as_str()),
+        impure: flake,
+        rebuild_args: helper::rebuild_args(flakeargs.as_deref()),
     };
-
-    let mut cmd = match syspkgs {
-        SystemPkgs::Legacy => {
-            if let Some(rmpkgs) = rmpkgs {
-                let newconfig =
-                    match nix_editor::write::rmarr(&f, "environment.systemPackages", rmpkgs) {
-                        Ok(x) => x,
-                        Err(_) => {
-                            return Err(anyhow!("Failed to write configuration.nix"));
-                        }
-                    };
-                let mut cmd = tokio::process::Command::new("pkexec")
-                    .arg(&exe)
-                    .arg("channel")
-                    .arg("--rebuild")
-                    .arg("--update")
-                    .arg("--generations")
-                    .arg(config.generations.unwrap_or(0).to_string())
-                    .arg("--output")
-                    .arg(&systemconfig)
-                    .arg("--")
-                    .arg("switch")
-                    .args(&rebuildargs)
-                    .stderr(Stdio::piped())
-                    .stdin(Stdio::piped())
-                    .spawn()?;
-                cmd.stdin
-                    .take()
-                    .unwrap()
-                    .write_all(newconfig.as_bytes())
-                    .await?;
-                cmd
-            } else {
-                tokio::process::Command::new("pkexec")
-                    .arg(&exe)
-                    .arg("channel")
-                    .arg("--rebuild")
-                    .arg("--generations")
-                    .arg(config.generations.unwrap_or(0).to_string())
-                    .arg("--")
-                    .arg("switch")
-                    .args(&rebuildargs)
-                    .stderr(Stdio::piped())
-                    .spawn()?
+    let newconfig = match rmpkgs {
+        Some(rmpkgs) => {
+            let f = fs::read_to_string(&systemconfig)?;
+            match nix_editor::write::rmarr(&f, "environment.systemPackages", rmpkgs) {
+                Ok(x) => Some(x),
+                Err(_) => return Err(anyhow!("Failed to write configuration.nix")),
             }
         }
-        SystemPkgs::Flake => {
-            if let Some(rmpkgs) = rmpkgs {
-                let newconfig =
-                    match nix_editor::write::rmarr(&f, "environment.systemPackages", rmpkgs) {
-                        Ok(x) => x,
-                        Err(_) => {
-                            return Err(anyhow!("Failed to write configuration.nix"));
-                        }
-                    };
-                let mut cmd = tokio::process::Command::new("pkexec")
-                    .arg(&exe)
-                    .arg("flake")
-                    .arg("--rebuild")
-                    .arg("--flakepath")
-                    .arg(&flakepath)
-                    .arg("--update")
-                    .arg("--generations")
-                    .arg(config.generations.unwrap_or(0).to_string())
-                    .arg("--output")
-                    .arg(&systemconfig)
-                    .arg("--")
-                    .arg("switch")
-                    .arg("--impure")
-                    .args(&rebuildargs)
-                    .stderr(Stdio::piped())
-                    .stdin(Stdio::piped())
-                    .spawn()?;
-                cmd.stdin
-                    .take()
-                    .unwrap()
-                    .write_all(newconfig.as_bytes())
-                    .await?;
-                cmd
-            } else {
-                tokio::process::Command::new("pkexec")
-                    .arg(&exe)
-                    .arg("flake")
-                    .arg("--rebuild")
-                    .arg("--flakepath")
-                    .arg(&flakepath)
-                    .arg("--generations")
-                    .arg(config.generations.unwrap_or(0).to_string())
-                    .arg("--output")
-                    .arg(&systemconfig)
-                    .arg("--")
-                    .arg("switch")
-                    .arg("--impure")
-                    .args(&rebuildargs)
-                    .stderr(Stdio::piped())
-                    .spawn()?
-            }
-        }
-        SystemPkgs::None => return Ok(true),
+        None => None,
     };
-
-    forward_stderr(&mut cmd, sink).await;
-    Ok(cmd.wait().await?.success())
+    run_helper(&call, newconfig, sink).await
 }
 
 async fn updateenv(sink: Sink<'_>) -> Result<bool> {

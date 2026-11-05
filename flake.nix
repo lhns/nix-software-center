@@ -31,6 +31,11 @@
             inherit pkgdb;
             onlineCheckUrl = "";
           };
+          # The CI UI screenshot run needs the hooks the shipped build leaves out.
+          nix-software-center-uitest = pkgs.callPackage ./default.nix {
+            nixos-appstream-data = appstream-data;
+            uitest = true;
+          };
           default = nix-software-center;
         };
 

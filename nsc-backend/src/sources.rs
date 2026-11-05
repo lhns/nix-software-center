@@ -373,10 +373,15 @@ async fn fetch_inner(flake: &str, link: &Path, timeout: std::time::Duration) -> 
     Err(tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
 }
 
-/// Whether the source should be refreshed at startup.
+/// Whether the source should be refreshed at startup. A failed fetch counts from the failure,
+/// so a source that cannot be built is not retried on every start.
 pub fn stale(id: &str, max_age: std::time::Duration) -> bool {
-    match status(id) {
-        Ok(Some(t)) => t.elapsed().map_or(true, |a| a > max_age),
-        _ => true,
+    let (modified, failed) = match status(id) {
+        Ok(t) => (t, false),
+        Err(_) => (std::fs::metadata(error_file(id)).and_then(|m| m.modified()).ok(), true),
+    };
+    match modified {
+        Some(t) => t.elapsed().map_or(true, |a| a >= max_age),
+        None => !failed,
     }
 }

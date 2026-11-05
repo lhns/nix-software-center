@@ -16,6 +16,8 @@ use std::{
 
 /// attribute -> (unfree, source id), for unfree apps and third-party apps only.
 static INFO: Mutex<Option<HashMap<String, (bool, String)>>> = Mutex::new(None);
+/// Source id -> display name as of the last merge, so a label does not reread sources.json.
+static NAMES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 /// Profile keys installed from a flake that is no longer a source.
 static REMOVED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 /// Rows dropped and sources refused by the last merge.
@@ -69,6 +71,7 @@ pub async fn merged(builtin: &str) -> Result<String, String> {
         warn!("catalogue merge: {} rows dropped, rejected {:?}", m.dropped, m.rejected);
     }
     let rows = load_info(&m.path).await;
+    *NAMES.lock().unwrap() = Some(srcs.iter().map(|s| (s.id.clone(), s.name.clone())).collect());
     *INFO.lock().unwrap() = Some(rows);
     *REPORT.lock().unwrap() = Some((m.dropped, m.rejected));
     Ok(m.path.to_string_lossy().into_owned())
@@ -104,7 +107,7 @@ pub fn source_name(pkg: &str) -> Option<String> {
     if id == sources::NIXPKGS_ID || id == sources::UNFREE_ID {
         return None;
     }
-    store().sources().into_iter().find(|s| s.id == id).map(|s| s.name)
+    NAMES.lock().unwrap().as_ref()?.get(&id).cloned()
 }
 
 /// The one label text for an app: "unfree", the source of a third-party app, or both.
@@ -131,7 +134,7 @@ pub fn caption(pkg: &str) -> String {
 
 /// `<flake>#<attribute>` for a package database attribute: third-party apps from their source's
 /// flake, built-in ones from nixpkgs or the unfree flake. Safe to put into a shell string once
-/// quoted with `shell_quote`.
+/// quoted with `nsc_backend::shell::quote`.
 pub fn installable(pkg: &str) -> Result<String, String> {
     match pkg.split_once(':') {
         Some((id, attr)) => {
@@ -147,11 +150,6 @@ pub fn installable(pkg: &str) -> Result<String, String> {
             sources::installable(if is_unfree(pkg) { unfree } else { "nixpkgs" }, pkg)
         }
     }
-}
-
-/// Single-quoted for `bash -c`.
-pub fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Escapes text for the few widgets that always parse markup.

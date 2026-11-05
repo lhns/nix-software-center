@@ -17,7 +17,7 @@ use super::{
 use gtk::prelude::*;
 use nsc_backend::sources;
 use nix_data::config::configfile::NixDataConfig;
-use nsc_backend::queue::{Action, BatchResult, Item, Queue};
+use nsc_backend::queue::{Action, BatchResult, Item, Queue, MAX_SLOTS};
 use relm4::gtk;
 use std::{
     cell::Cell,
@@ -53,6 +53,11 @@ fn add(q: &mut Queue<Job>, (key, action, payload): (String, Action, Job)) {
     q.enqueue(Item { id: 0, key, action, payload });
 }
 
+/// Starts the next item; its id.
+fn run(q: &mut Queue<Job>) -> u64 {
+    q.start(MAX_SLOTS, true).batch().map_or(0, |b| b.id())
+}
+
 fn id(q: &Queue<Job>, key: &str) -> u64 {
     q.entries().iter().find(|e| e.key == key).map_or(0, |e| e.id)
 }
@@ -61,27 +66,27 @@ fn id(q: &Queue<Job>, key: &str) -> u64 {
 fn seed() -> (u64, u64, u64) {
     let ids = userops::with_queue(|q| {
         add(q, pkg("hello", PkgAction::Install));
-        q.start();
-        q.log_push("copying path '/nix/store/aaaa-hello-2.12' from 'https://cache.nixos.org'...");
-        q.complete(BatchResult::Done);
+        let n = run(q);
+        q.log_push(n, "copying path '/nix/store/aaaa-hello-2.12' from 'https://cache.nixos.org'...");
+        q.complete(n, BatchResult::Done);
 
         add(q, pkg("jq", PkgAction::Install));
-        q.start();
-        q.log_push("building '/nix/store/bbbb-jq-1.7.drv'...");
-        q.log_push("error: builder for '/nix/store/bbbb-jq-1.7.drv' failed with exit code 1");
-        q.log_push("<b>&\"markup\"");
-        q.complete(BatchResult::Failed("error: builder failed\n<b>&\"markup\"".into()));
+        let n = run(q);
+        q.log_push(n, "building '/nix/store/bbbb-jq-1.7.drv'...");
+        q.log_push(n, "error: builder for '/nix/store/bbbb-jq-1.7.drv' failed with exit code 1");
+        q.log_push(n, "<b>&\"markup\"");
+        q.complete(n, BatchResult::Failed("error: builder failed\n<b>&\"markup\"".into()));
 
         add(q, pkg("ripgrep", PkgAction::Install));
-        q.start();
-        q.complete(BatchResult::Cancelled);
+        let n = run(q);
+        q.complete(n, BatchResult::Cancelled);
 
         add(q, pkg("fd", PkgAction::Install));
-        q.start();
+        let running = run(q);
         for n in 1..=40 {
-            q.log_push(&format!("copying path '/nix/store/cccc{n:02}-fd-9.0.0' from 'https://cache.nixos.org'..."));
+            q.log_push(running, &format!("copying path '/nix/store/cccc{n:02}-fd-9.0.0' from 'https://cache.nixos.org'..."));
         }
-        q.set_progress(Some(0.4), "Downloading 12.3 MiB of 30.1 MiB".into());
+        q.set_progress(running, Some(0.4), "Downloading 12.3 MiB of 30.1 MiB".into());
 
         add(q, pkg("bat", PkgAction::Remove));
         let update = UpdateJob { scope: UpdateType::All, rm_user: None, rm_sys: None };
@@ -217,7 +222,11 @@ pub fn start(dir: String, window: gtk::Window, input: relm4::Sender<AppMsg>) {
             12 => input.emit(AppMsg::ShowTab("updates".into())),
             13 => {
                 // A failure the user has not seen: the badge gets its attention dot.
-                userops::with_queue(|q| q.complete(BatchResult::Failed("later failure".into())));
+                userops::with_queue(|q| {
+                    if let Some(id) = q.running().first().map(|b| b.id()) {
+                        q.complete(id, BatchResult::Failed("later failure".into()));
+                    }
+                });
                 userops::changed();
             }
             14 => shot("06-badge.png"),

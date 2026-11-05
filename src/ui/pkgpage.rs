@@ -25,6 +25,7 @@ use log::*;
 use crate::parse::packages::PkgMaintainer;
 use crate::parse::util;
 
+use nsc_backend::shell;
 use super::{activitylog::LogMsg, sourceinfo, userops, window::ACTIVITYLOG_BROKER};
 use super::window::SystemPkgs;
 use super::included;
@@ -1520,7 +1521,6 @@ impl Component for PkgModel {
                         return;
                     }
                 };
-                let quoted = sourceinfo::shell_quote(&installable);
                 if let Some(l) = &self.launchable {
                     match l {
                         Launch::GtkApp(x) => {
@@ -1531,7 +1531,7 @@ impl Component for PkgModel {
                                         .arg("-p")
                                         .arg(&self.pkg)
                                         .arg("--command")
-                                        .arg(&format!("XDG_DATA_DIRS=$XDG_DATA_DIRS:$buildInputs/share gtk-launch {}", x))
+                                        .arg(&format!("XDG_DATA_DIRS=$XDG_DATA_DIRS:$buildInputs/share gtk-launch {}", shell::quote(x)))
                                         .spawn();
                                 }
                                 UserPkgs::Profile => {
@@ -1542,42 +1542,24 @@ impl Component for PkgModel {
                                         .arg("--command")
                                         .arg("bash")
                                         .arg("-c")
-                                        .arg(&format!(
-                                            "env XDG_DATA_DIRS=$XDG_DATA_DIRS:$(nix eval {} --raw)/share gtk-launch {}",
-                                            sourceinfo::shell_quote(&format!("{installable}.outPath")),
-                                            x
-                                        ))
+                                        .arg(shell::gtk_launch(&installable, x))
                                         .spawn();
                                 }
                             }
                         }
                         Launch::TerminalApp(x) => {
-                            let cmd = match self.userpkgtype {
-                                UserPkgs::Env => {
-                                    format!("nix-shell -p {} --command \"{}; $SHELL\"", self.pkg, x)
-                                }
-                                UserPkgs::Profile => {
-                                    format!("nix shell {} --command bash -c \"{}; $SHELL\"", quoted, x)
-                                }
-                            };
-                            launchterm(&cmd);
+                            let env = self.userpkgtype == UserPkgs::Env;
+                            launchterm(&shell::terminal_run(env, &self.pkg, &installable, x));
                         }
                     }
                 } else {
-                    let cmd = match self.userpkgtype {
-                        UserPkgs::Env => {
-                            format!("nix-shell -p {} --command \"{}; $SHELL\"", self.pkg, self.pname)
-                        }
-                        UserPkgs::Profile => {
-                            format!("nix shell {} --command bash -c \"{}; $SHELL\"", quoted, self.pname)
-                        }
-                    };
-                    launchterm(&cmd);
+                    let env = self.userpkgtype == UserPkgs::Env;
+                    launchterm(&shell::terminal_run(env, &self.pkg, &installable, &self.pname));
                 }
             }
             PkgMsg::NixShell => {
                 let quoted = match sourceinfo::installable(&self.pkg) {
-                    Ok(i) => sourceinfo::shell_quote(&i),
+                    Ok(i) => shell::quote(&i),
                     Err(e) => {
                         warn!("Cannot open a shell with {}: {}", self.pkg, e);
                         return;
@@ -1585,7 +1567,7 @@ impl Component for PkgModel {
                 };
                 let cmd = match self.userpkgtype {
                     UserPkgs::Env => {
-                        format!("nix-shell -p {}", self.pkg)
+                        format!("nix-shell -p {}", shell::quote(&self.pkg))
                     }
                     UserPkgs::Profile => {
                         format!("nix shell {}", quoted)

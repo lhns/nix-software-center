@@ -5,7 +5,18 @@ fn it(key: &str, action: Action) -> Item<()> {
 }
 
 fn keys(b: &Batch<()>) -> Vec<&str> {
-    b.items.iter().map(|i| i.key.as_str()).collect()
+    vec![b.item.key.as_str()]
+}
+
+/// Starts the next item and returns the id of the batch that is running last.
+fn start(q: &mut Queue<()>) -> Option<Batch<()>> {
+    q.start(MAX_SLOTS, true).batch()
+}
+
+/// Ends the only running job.
+fn complete(q: &mut Queue<()>, r: BatchResult) {
+    let id = q.running()[0].id();
+    q.complete(id, r);
 }
 
 fn id_of(q: &Queue<()>, key: &str) -> u64 {
@@ -19,9 +30,9 @@ fn ids_are_assigned_on_enqueue_and_stay_stable() {
     q.enqueue(it("b", Install));
     let (a, b) = (id_of(&q, "a"), id_of(&q, "b"));
     assert_ne!(a, b);
-    q.start();
+    start(&mut q);
     assert_eq!(id_of(&q, "a"), a);
-    q.complete(BatchResult::Cancelled);
+    complete(&mut q, BatchResult::Cancelled);
     assert_eq!(id_of(&q, "a"), a);
     assert!(q.retry(a, |_| {}));
     assert_eq!(id_of(&q, "a"), a);
@@ -33,15 +44,14 @@ fn exclusive_runs_alone_and_is_a_barrier() {
     for (k, a) in [("a", Install), ("x", Exclusive), ("b", Install), ("y", Exclusive)] {
         q.enqueue(it(k, a));
     }
-    let b = q.start().unwrap();
-    assert_eq!(keys(&b), ["a"]);
-    q.complete(BatchResult::Done);
-    let b = q.start().unwrap();
+    assert_eq!(keys(&start(&mut q).unwrap()), ["a"]);
+    complete(&mut q, BatchResult::Done);
+    let b = start(&mut q).unwrap();
     assert_eq!((b.action, keys(&b)), (Exclusive, vec!["x"]));
-    q.complete(BatchResult::Done);
-    assert_eq!(keys(&q.start().unwrap()), ["b"]);
-    q.complete(BatchResult::Done);
-    assert_eq!(keys(&q.start().unwrap()), ["y"]);
+    complete(&mut q, BatchResult::Done);
+    assert_eq!(keys(&start(&mut q).unwrap()), ["b"]);
+    complete(&mut q, BatchResult::Done);
+    assert_eq!(keys(&start(&mut q).unwrap()), ["y"]);
 }
 
 #[test]
@@ -50,12 +60,13 @@ fn history_orders_entries_and_keeps_states() {
     q.enqueue(it("a", Install));
     q.enqueue(it("x", Exclusive));
     q.enqueue(it("c", Remove));
-    q.start();
-    q.log_push("hello");
-    q.complete(BatchResult::Done);
-    q.start();
-    q.complete(BatchResult::Failed("bad".into()));
-    q.start();
+    start(&mut q);
+    let id = q.running()[0].id();
+    q.log_push(id, "hello");
+    complete(&mut q, BatchResult::Done);
+    start(&mut q);
+    complete(&mut q, BatchResult::Failed("bad".into()));
+    start(&mut q);
     let order: Vec<_> = q.entries().into_iter().map(|e| (e.key, e.state)).collect();
     assert_eq!(
         order,
@@ -74,7 +85,7 @@ fn cancelling_a_queued_entry_records_it_as_cancelled() {
     let mut q = Queue::new();
     q.enqueue(it("a", Install));
     q.enqueue(it("b", Install));
-    q.start();
+    start(&mut q);
     q.enqueue(it("c", Install));
     q.enqueue(it("d", Install));
     let c = id_of(&q, "c");
@@ -91,15 +102,16 @@ fn cancelling_a_queued_entry_records_it_as_cancelled() {
 fn retry_requeues_with_log_unless_the_same_work_is_active() {
     let mut q = Queue::new();
     q.enqueue(it("a", Install));
-    q.start();
-    q.log_push("first try");
-    q.complete(BatchResult::Failed("boom".into()));
+    start(&mut q);
+    let id = q.running()[0].id();
+    q.log_push(id, "first try");
+    complete(&mut q, BatchResult::Failed("boom".into()));
     let a = id_of(&q, "a");
     assert!(q.enqueue(it("a", Install)));
     assert!(!q.retry(a, |_| {}), "same key and action is queued");
     assert!(q.entry_by_id(a).is_some(), "the entry stays");
-    q.start();
-    q.complete(BatchResult::Done);
+    start(&mut q);
+    complete(&mut q, BatchResult::Done);
     // Done entries are not retried.
     let done = q.entries().into_iter().find(|e| e.state == EntryState::Done).unwrap().id;
     assert!(!q.retry(done, |_| {}));
@@ -112,28 +124,15 @@ fn retry_requeues_with_log_unless_the_same_work_is_active() {
 }
 
 #[test]
-fn per_item_retry_after_batch_failure_adds_a_separator() {
-    let mut q = Queue::new();
-    q.enqueue(it("a", Install));
-    q.enqueue(it("b", Install));
-    q.start();
-    q.log_push("batch output");
-    assert!(q.complete(BatchResult::Failed("x".into())).is_empty());
-    q.start();
-    let a = id_of(&q, "a");
-    let (lines, _) = q.log_since(a, 0);
-    assert_eq!(lines[0], "batch output");
-    assert!(lines[1].starts_with("---"));
-}
-
-#[test]
 fn remove_and_clear_finished() {
     let mut q = Queue::new();
     for k in ["a", "b", "c"] {
         q.enqueue(it(k, Install));
     }
-    q.start();
-    q.complete(BatchResult::Done);
+    for _ in 0..3 {
+        start(&mut q);
+        complete(&mut q, BatchResult::Done);
+    }
     let a = id_of(&q, "a");
     assert!(q.remove(a));
     assert!(!q.remove(a));
@@ -146,12 +145,12 @@ fn remove_and_clear_finished() {
 fn history_cap_drops_the_oldest_non_failed_first() {
     let mut q = Queue::new();
     q.enqueue(it("failed", Install));
-    q.start();
-    q.complete(BatchResult::Failed("no".into()));
+    start(&mut q);
+    complete(&mut q, BatchResult::Failed("no".into()));
     for n in 0..MAX_FINISHED + 5 {
         q.enqueue(it(&format!("k{n}"), Install));
-        q.start();
-        q.complete(BatchResult::Done);
+        start(&mut q);
+        complete(&mut q, BatchResult::Done);
     }
     let entries = q.entries();
     assert_eq!(entries.len(), MAX_FINISHED);
@@ -165,8 +164,8 @@ fn history_of_only_failures_drops_the_oldest() {
     let mut q = Queue::new();
     for n in 0..MAX_FINISHED + 1 {
         q.enqueue(it(&format!("k{n}"), Install));
-        q.start();
-        q.complete(BatchResult::Failed("no".into()));
+        start(&mut q);
+        complete(&mut q, BatchResult::Failed("no".into()));
     }
     let entries = q.entries();
     assert_eq!(entries.len(), MAX_FINISHED);
@@ -177,33 +176,34 @@ fn history_of_only_failures_drops_the_oldest() {
 fn unseen_failures_count_until_marked_seen() {
     let mut q = Queue::new();
     q.enqueue(it("a", Install));
-    q.start();
-    q.complete(BatchResult::Done);
+    start(&mut q);
+    complete(&mut q, BatchResult::Done);
     q.enqueue(it("b", Install));
-    q.start();
-    q.complete(BatchResult::Cancelled);
+    start(&mut q);
+    complete(&mut q, BatchResult::Cancelled);
     assert_eq!(q.unseen_failures(), 0);
     q.enqueue(it("c", Install));
-    q.start();
-    q.complete(BatchResult::Failed("no".into()));
+    start(&mut q);
+    complete(&mut q, BatchResult::Failed("no".into()));
     assert_eq!(q.unseen_failures(), 1);
     q.mark_failures_seen();
     assert_eq!(q.unseen_failures(), 0);
 }
 
 #[test]
-fn log_lines_go_to_every_running_item_and_are_pulled_incrementally() {
+fn log_lines_go_to_their_own_running_job_and_are_pulled_incrementally() {
     let mut q = Queue::new();
     q.enqueue(it("a", Install));
     q.enqueue(it("b", Install));
-    q.start();
-    q.log_push("one");
-    let (a, b) = (id_of(&q, "a"), id_of(&q, "b"));
+    let (ba, bb) = (start(&mut q).unwrap(), start(&mut q).unwrap());
+    q.log_push(ba.id(), "one");
+    q.log_push(bb.id(), "other");
+    let (a, b) = (ba.id(), bb.id());
     let (lines, seen) = q.log_since(a, 0);
     assert_eq!((lines, seen), (vec!["one".to_string()], 1));
-    q.log_push("two");
+    q.log_push(a, "two");
     assert_eq!(q.log_since(a, seen), (vec!["two".to_string()], 2));
-    assert_eq!(q.log_since(b, 0).0, ["one", "two"]);
+    assert_eq!(q.log_since(b, 0).0, ["other"]);
     assert_eq!(q.log_since(a, 2).0, Vec::<String>::new());
 }
 
@@ -234,24 +234,28 @@ fn log_limits_lines_bytes_and_line_length() {
 fn finishing_trims_the_log_to_a_tail() {
     let mut q = Queue::new();
     q.enqueue(it("a", Install));
-    q.start();
-    for _ in 0..1000 {
-        q.log_push(&"z".repeat(900));
-    }
+    start(&mut q);
     let a = id_of(&q, "a");
+    for _ in 0..1000 {
+        q.log_push(a, &"z".repeat(900));
+    }
     assert!(q.log(a).unwrap().bytes() > FINISHED_LOG_BYTES);
-    q.complete(BatchResult::Done);
+    complete(&mut q, BatchResult::Done);
     assert!(q.log(a).unwrap().bytes() <= FINISHED_LOG_BYTES);
 }
 
 #[test]
-fn progress_is_reported_for_running_entries_only() {
+fn progress_is_kept_per_running_job() {
     let mut q = Queue::new();
     q.enqueue(it("a", Install));
+    q.enqueue(it("b", Install));
     q.enqueue(it("x", Exclusive));
-    q.start();
-    q.set_progress(Some(0.5), "half".into());
+    let (a, b) = (start(&mut q).unwrap().id(), start(&mut q).unwrap().id());
+    q.set_progress(a, Some(0.5), "half".into());
     let e = q.entries();
     assert_eq!(e[0].progress, Some(Progress { fraction: Some(0.5), label: "half".into() }));
-    assert_eq!((e[1].progress.clone(), e[1].ahead), (None, 1));
+    assert_eq!(e[1].progress, Some(Progress::default()));
+    assert_eq!((e[2].progress.clone(), e[2].ahead), (None, 2));
+    q.complete(b, BatchResult::Done);
+    assert!(q.entries().iter().all(|e| e.state != EntryState::Done || e.progress.is_none()));
 }

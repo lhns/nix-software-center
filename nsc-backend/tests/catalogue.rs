@@ -171,3 +171,17 @@ async fn path_is_stable_and_keyed_on_inputs() {
     let again = merge(d.path(), Some(&builtin(b, true, true)), &[]).await.unwrap();
     assert_eq!(again, m);
 }
+
+#[tokio::test]
+async fn cleanup_keeps_another_instances_temp_file() {
+    let d = tempfile::tempdir().unwrap();
+    let b = d.path().join("b.db");
+    make(&b, None, &[("hello", "hello", 0)], &[]).await;
+    let other_tmp = d.path().join("merged-tmp-424242.db");
+    let old = d.path().join("merged-0123456789abcdef.db");
+    std::fs::write(&other_tmp, b"in flight").unwrap();
+    std::fs::write(&old, b"stale").unwrap();
+    merge(d.path(), Some(&builtin(b, true, false)), &[]).await.unwrap();
+    assert!(other_tmp.exists(), "another instance's in-flight file was deleted");
+    assert!(!old.exists(), "an outdated merged database should go");
+}
