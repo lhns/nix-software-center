@@ -84,12 +84,18 @@ pub struct Summary {
     /// Activities started / stopped so far.
     pub started: u64,
     pub stopped: u64,
+    /// Every activity Nix reported has stopped, so while the command still runs it is
+    /// committing: taking or waiting for the profile locks, or running the hook.
+    pub applying: bool,
 }
 
 impl Summary {
     /// One-line status. Until Nix reports expected work it is evaluating, which
     /// can take a while and has no numbers to show.
     pub fn label(&self) -> String {
+        if self.applying {
+            return "Applying…".to_string();
+        }
         let mut parts = vec![];
         if self.fraction.is_none() {
             parts.push("Evaluating…".to_string());
@@ -192,6 +198,7 @@ impl Tree {
                 _ => {}
             }
         }
+        s.applying = s.started > 0 && s.started == s.stopped;
         s.status = newest.map(|a| a.text.clone());
         let expected = s.builds.1 + s.downloads.1;
         if expected > 0 {
