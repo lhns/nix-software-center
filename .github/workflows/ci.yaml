@@ -1,0 +1,159 @@
+name: ci
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  nix:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+      - name: build package
+        run: nix build .#packages.${{ matrix.system }}.nix-software-center -L
+      # Real `nix profile` on the runner, in a fresh HOME so the profile is new.
+      - name: backend smoke test
+        run: |
+          smoke=$(readlink -f result)/libexec/nix-software-center/nsc-backend-smoke
+          HOME=$(mktemp -d) "$smoke" nixpkgs#hello --require-progress
+      # The default unfree flake must resolve and install unfree apps with
+      # no --impure on a fresh profile (the commit under test, not the default branch).
+      - name: unfree flake with its lock
+        run: |
+          nix --version
+          sha=${{ github.event.pull_request.head.sha || github.sha }}
+          export HOME=$(mktemp -d)
+          nix profile add "github:${{ github.repository }}/$sha?dir=nix/unfree#hello-unfree" -L
+          nix profile list | grep -q hello-unfree
+      - name: devShell evaluates
+        run: nix eval .#devShell.${{ matrix.system }}.drvPath
+      - name: build appstream data
+        run: |
+          nix build .#packages.${{ matrix.system }}.appstream-data -L -o appstream
+          du -shL appstream/share/app-info/xmls appstream/share/app-info/icons/nixos/* | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: pkgdb-small check
+        run: nix build .#checks.${{ matrix.system }}.pkgdb-small -L
+      # Walks the Activity tab on a headless compositor; src/ui/uitest.rs writes the screenshots.
+      - name: UI screenshots
+        if: matrix.system == 'x86_64-linux'
+        run: |
+          nix build .#packages.${{ matrix.system }}.pkgdb-small -L -o pkgdb-small
+          nix build .#packages.${{ matrix.system }}.nix-software-center -L -o app
+          export XDG_RUNTIME_DIR=$(mktemp -d) HOME=$(mktemp -d)
+          mkdir -p shots
+          # hello and minimal match by name; the rest is hostile or malformed.
+          cat > shots/manifest.json <<'EOF'
+          {"packages":[{"pname":"hello","version":"1.0","path":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello-1.0"},{"pname":"minimal"},{"pname":"<b>x</b> & \"q\""},{"pname":5},null]}
+          EOF
+          export NSC_UI_TEST=$PWD/shots NSC_PKGDB=$(readlink -f pkgdb-small)/nixpkgs.db NSC_ONLINE_CHECK_URL= GSK_RENDERER=cairo
+          nix shell nixpkgs#weston nixpkgs#dbus -c bash -euo pipefail -c '
+            weston --backend=headless --socket=wl-ci &
+            for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.2; done
+            run_app() { # log name, then env assignments
+              log=$1; shift
+              set +e
+              env "$@" WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session --config-file="$(dirname "$(command -v dbus-daemon)")/../share/dbus-1/session.conf" -- timeout 120 app/bin/nix-software-center > "shots/$log" 2>&1
+              rc=$?
+              set -e
+              tail -n 40 "shots/$log"
+              [ "$rc" = 0 ] || { echo "::error::app exited with $rc"; exit 1; }
+              ! grep -E "panicked|LoadError|Error retrieving|Error connecting|Error merging" "shots/$log" || { echo "::error::error in log"; exit 1; }
+            }
+            # Set but unreadable: the feature is off and the app still starts. Before the real run,
+            # which writes the screenshots last.
+            run_app app-badmanifest.log NSC_TEST=1 NSC_SYSTEM_MANIFEST=$PWD/shots/missing.json
+            grep -q "Ignoring NSC_SYSTEM_MANIFEST" shots/app-badmanifest.log || { echo "::error::no warning"; exit 1; }
+            run_app app.log NSC_TEST=1 NSC_SYSTEM_MANIFEST=$PWD/shots/manifest.json
+            grep -q "system manifest: 3 entries, 2 catalogue apps" shots/app.log || { echo "::error::manifest not resolved"; exit 1; }
+            # System packages off on a (faked) NixOS: no welcome screen, preferences hold only Sources.
+            run_app app-nosys.log NSC_SYSTEM_PACKAGES=0 NSC_FAKE_NIXOS=1
+            for f in 01-activity 02-modal-running 03-hidden 04-modal-queued 05-modal-failed 06-badge 07-tile-unfree 08-sources 09-add-source 10-consent-hostile 11-pkgpage-unfree 12-consent-real 13-installed 14-pkgpage-included 15-tile-included nosys-01-main nosys-02-preferences; do
+              [ -s "shots/$f.png" ] || { echo "::error::missing $f.png"; exit 1; }
+            done
+          '
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.system == 'x86_64-linux'
+        with:
+          name: ui-screenshots
+          path: shots/
+          if-no-files-found: warn
+
+  pkgdb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - uses: cachix/install-nix-action@v31
+      - name: build index
+        run: |
+          start=$(date +%s)
+          nix build .#packages.${{ matrix.system }}.pkgdb -L -o pkgdb
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+      - name: report size
+        run: |
+          nix shell nixpkgs#sqlite nixpkgs#zstd -c bash -c '
+            db=$(readlink -f pkgdb)/nixpkgs.db
+            {
+              echo "### pkgdb ${{ matrix.system }}"
+              echo "- pkgs rows: $(sqlite3 "$db" "select count(*) from pkgs")"
+              echo "- meta rows: $(sqlite3 "$db" "select count(*) from meta")"
+              echo "- raw: $(stat -c %s "$db") bytes"
+              echo "- zstd -19: $(zstd -19 -c "$db" | wc -c) bytes"
+              echo "- gzip -9: $(gzip -9 -c "$db" | wc -c) bytes"
+              echo "- build wall time: $BUILD_SECONDS s"
+              echo "- empty pname, version, position: $(sqlite3 "$db" "select (select count(*) from pkgs where length(pname) = 0), (select count(*) from pkgs where length(version) = 0), (select count(*) from meta where length(position) = 0)")"
+              echo "- column bytes (description, longdescription, license, platforms, maintainers):"
+              sqlite3 "$db" "select sum(length(description)), sum(length(longdescription)), sum(length(license)), sum(length(platforms)), sum(length(maintainers)) from meta"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          '
+
+      # Startup with the real index on a headless compositor: catches load errors and panics.
+      - name: GUI startup smoke
+        run: |
+          nix build .#packages.${{ matrix.system }}.nix-software-center-full -L -o full
+          export XDG_RUNTIME_DIR=$(mktemp -d) HOME=$(mktemp -d)
+          nix shell nixpkgs#weston nixpkgs#dbus -c bash -euo pipefail -c '
+            weston --backend=headless --socket=wl-ci &
+            for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-ci" ] && break; sleep 0.2; done
+            set +e
+            WAYLAND_DISPLAY=wl-ci RUST_LOG=info dbus-run-session --config-file="$(dirname "$(command -v dbus-daemon)")/../share/dbus-1/session.conf" -- timeout 40 full/bin/nix-software-center > app.log 2>&1
+            rc=$?
+            set -e
+            tail -n 40 app.log
+            [ "$rc" = 124 ] || { echo "::error::app exited early ($rc)"; exit 1; }
+            ! grep -E "panicked|LoadError|Error retrieving|Error connecting" app.log || { echo "::error::load error"; exit 1; }
+          '
+
+  cargo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: test backend
+        run: cargo test -p nsc-backend --locked
+      - name: build smoke binary
+        run: cargo build -p nsc-backend --features smoke --locked
