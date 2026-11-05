@@ -10,6 +10,10 @@ pub const UNFREE_ID: &str = "nixpkgs-unfree";
 /// Default flake of the unfree built-in: own wrapper with a locked nixpkgs.
 pub const DEFAULT_UNFREE_FLAKE: &str = "github:lhns/nix-software-center?dir=nix/unfree";
 const MAX_REF: usize = 512;
+/// Longest a catalogue build may take.
+pub const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Age after which a catalogue is rebuilt at startup.
+pub const STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 /// Deployer settings, read once at startup.
 #[derive(Debug, Clone, PartialEq)]

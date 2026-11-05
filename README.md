@@ -154,8 +154,12 @@ All in `nix profile` mode unless noted; the other modes behave as upstream.
 - **Fixes**: no crash on installed entries missing from the index; the "Open" button for
   terminal apps (PATH lookup instead of running the `command` builtin); the terminal comes from
   `$TERMINAL`/`xdg-terminal-exec`/installed terminals instead of `kgx`; `NSC_ONLINE_CHECK_URL`
-  overrides (or, empty, disables) the `nmcheck.gnome.org` check; the operation dialog uses a plain
-  text view (no gtksourceview5).
+  overrides (or, empty, disables) the `nmcheck.gnome.org` check; no gtksourceview5.
+- **Activity tab**: one app-wide queue for installs, removals and updates, with a log modal per
+  entry, retry and cancel. Profile installs and removals run as batches.
+- **Package sources**: flakes that publish a catalogue, managed under Preferences (Sources), with
+  an "nixpkgs unfree" built-in and a consent dialog for unfree apps.
+- **Included with desktop**: `NSC_SYSTEM_MANIFEST` marks apps the system image already ships.
 - `nsc-backend/`: the GTK-free backend with unit tests, and `nsc-backend-smoke`, a headless
   smoke test of the same functions (installed to `libexec/nix-software-center/`).
 - How it ships in the desktops: [docs/integration.md](docs/integration.md).

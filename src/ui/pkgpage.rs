@@ -73,6 +73,17 @@ pub struct WorkPkg {
     pub notify: Option<NotifyPage>,
 }
 
+impl WorkPkg {
+    /// Name for titles and dialogs.
+    pub fn display_name(&self) -> &str {
+        if self.pname.is_empty() {
+            &self.pkg
+        } else {
+            &self.pname
+        }
+    }
+}
+
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub enum NotifyPage {
     Installed,
@@ -1754,7 +1765,7 @@ Installing it means you accept its licence terms."
 /// Asks at the Install click, never when a queued item starts; the installed element is the
 /// acceptance, so updates and restores do not ask again.
 fn confirm_unfree(w: WorkPkg, licence: String, ctx: userops::Ctx, out: relm4::Sender<AppMsg>) {
-    let name = if w.pname.is_empty() { w.pkg.clone() } else { w.pname.clone() };
+    let name = w.display_name().to_string();
     let dialog = unfree_dialog(&name, &licence);
     dialog.connect_response(None, move |_, response| {
         if response == "install" {
@@ -1768,7 +1779,7 @@ fn confirm_unfree(w: WorkPkg, licence: String, ctx: userops::Ctx, out: relm4::Se
 
 /// Asks before a removal; Cancel is the default and enqueues nothing.
 fn confirm_remove(w: WorkPkg, ctx: userops::Ctx, out: relm4::Sender<AppMsg>) {
-    let name = if w.pname.is_empty() { w.pkg.clone() } else { w.pname.clone() };
+    let name = w.display_name().to_string();
     let from = match (&w.pkgtype, &ctx.userpkgs) {
         (InstallType::System, _) => "your system configuration",
         (InstallType::User, UserPkgs::Env) => "your user environment",

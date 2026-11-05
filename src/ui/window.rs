@@ -182,7 +182,6 @@ pub enum AppMsg {
     CheckNetwork,
     /// Work was queued, finished or changed: refresh the Activity badge.
     ActivityChanged,
-    ShowActivity,
     ShowTab(String),
     /// An update was queued: toast with a link to the Activity tab.
     UpdateQueued(String),
@@ -1729,15 +1728,12 @@ FROM pkgs JOIN meta ON (pkgs.attribute = meta.attribute) WHERE pkgs.attribute = 
             AppMsg::ShowTab(name) => {
                 self.viewstack.set_visible_child_name(&name);
             }
-            AppMsg::ShowActivity => {
-                self.viewstack.set_visible_child_name("activity");
-            }
             AppMsg::UpdateQueued(title) => {
                 // Toast titles are markup.
                 let toast = adw::Toast::new(&gtk::glib::markup_escape_text(&title));
                 toast.set_button_label(Some("View"));
                 let input = sender.input_sender().clone();
-                toast.connect_button_clicked(move |_| input.emit(AppMsg::ShowActivity));
+                toast.connect_button_clicked(move |_| input.emit(AppMsg::ShowTab("activity".into())));
                 self.toasts.add_toast(toast);
             }
             AppMsg::ConfirmClose => {
@@ -2253,12 +2249,12 @@ fn refresh_stale(input: relm4::Sender<AppMsg>) {
     relm4::spawn(async move {
         let mut changed = false;
         for s in super::sourceinfo::store().sources().into_iter().filter(|s| !s.builtin && s.enabled) {
-            if !sources::stale(&s.id, std::time::Duration::from_secs(24 * 3600)) {
+            if !sources::stale(&s.id, sources::STALE_AFTER) {
                 continue;
             }
             let link = sources::catalogue_link(&s.id);
             let before = std::fs::read_link(&link).ok();
-            let _ = sources::fetch(&s.id, &s.flake, std::time::Duration::from_secs(300)).await;
+            let _ = sources::fetch(&s.id, &s.flake, sources::FETCH_TIMEOUT).await;
             changed |= std::fs::read_link(&link).ok() != before;
         }
         if changed {
