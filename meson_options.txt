@@ -1,4 +1,10 @@
 option(
+  'uitest',
+  type: 'boolean',
+  value: false,
+  description: 'Build the screenshot hooks the CI UI run needs',
+)
+option(
   'profile',
   type: 'combo',
   choices: [

@@ -90,3 +90,18 @@ fn store_version_follows_parse_drv_name() {
     assert_eq!(p("hello-"), None);
     assert_eq!(store_version("/nix/store/short"), None);
 }
+
+#[test]
+fn only_stock_nix_runs_one_command_at_a_time() {
+    let mut nix = nsc_backend::ops::Nix::new("nix");
+    assert_eq!(nix.slots(), 1);
+    nix.locking_commits = true;
+    assert_eq!(nix.slots(), nsc_backend::queue::MAX_SLOTS);
+}
+
+#[test]
+fn the_sqlite_busy_line_is_noise() {
+    use nsc_backend::ops::is_noise;
+    assert!(is_noise("warning: SQLite database '/nix/var/nix/db/db.sqlite' is busy"));
+    assert!(!is_noise("error: builder for 'x.drv' failed"));
+}

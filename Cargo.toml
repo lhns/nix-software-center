@@ -35,6 +35,10 @@ spdx = "0.10"
 anyhow = "1.0"
 nsc-backend = { path = "nsc-backend" }
 
+# Screenshot hooks and fixtures for the CI UI run (src/ui/uitest.rs); never in a shipped build.
+[features]
+uitest = []
+
 [workspace]
 members = [".", "nsc-helper", "nsc-backend"]
 default-members = [".", "nsc-helper", "nsc-backend"]

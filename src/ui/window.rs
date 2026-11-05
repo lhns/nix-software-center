@@ -889,10 +889,15 @@ impl Component for AppModel {
                 }
                 cat_guard.drop();
                 self.busy = false;
-                if std::env::var("NSC_UI_TEST").is_err() {
+                #[cfg(feature = "uitest")]
+                let ui_test = std::env::var("NSC_UI_TEST").ok();
+                #[cfg(not(feature = "uitest"))]
+                let ui_test: Option<String> = None;
+                if ui_test.is_none() {
                     refresh_stale(sender.input_sender().clone());
                 }
-                if let Ok(dir) = std::env::var("NSC_UI_TEST") {
+                #[cfg(feature = "uitest")]
+                if let Some(dir) = ui_test {
                     super::uitest::start(dir, root.clone().upcast(), sender.input_sender().clone());
                 }
             }

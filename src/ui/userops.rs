@@ -14,18 +14,28 @@ use anyhow::{bail, Result};
 use log::*;
 use nix_data::config::configfile::NixDataConfig;
 use nsc_backend::{
+    memory,
     ops::{self, Nix},
     pkgdb::{self, Unavailable},
     profile,
     progress::Summary,
-    queue::{self, Action, BatchResult, Entry, Item, Queue, Status},
+    queue::{self, Action, BatchResult, Entry, Item, Queue, Start, Status},
     run::{Cancel, Event},
 };
 use std::{
     collections::{HashMap, VecDeque},
     path::Path,
     sync::{Mutex, OnceLock},
+    time::Duration,
 };
+use tokio::sync::Notify;
+
+/// A running job ended or an item arrived: the runner looks again.
+static WAKE: Notify = Notify::const_new();
+/// Memory use takes a moment to show after a job starts; the next one waits this long.
+const SETTLE: Duration = Duration::from_secs(2);
+/// How often a waiting runner rereads the memory gate.
+const GATE_POLL: Duration = Duration::from_secs(3);
 
 static NIX: OnceLock<Nix> = OnceLock::new();
 
@@ -58,6 +68,7 @@ pub async fn installed_versions(pkgdb_path: &str) -> Result<HashMap<String, Stri
         out.entry(pkg.key)
             .or_insert_with(|| dbversion.or(pkg.store_version).unwrap_or_default());
     }
+    #[cfg(feature = "uitest")]
     if std::env::var_os("NSC_UI_TEST").is_some() {
         // Screenshot fixtures: an unfree app, and one whose source is gone.
         let gone = "github:gone/src#packages.x86_64-linux.gone".to_string();
@@ -106,12 +117,12 @@ impl Ctx {
     }
 }
 
-/// The queue and the cancel handle of its running batch, under one lock so a
-/// cancel can neither miss a batch that just started nor hit the next one.
+/// The queue and the cancel handles of its running jobs by id, under one lock so a
+/// cancel can neither miss a job that just started nor hit a later one.
 #[derive(Default)]
 struct QueueState {
     queue: Queue<Job>,
-    cancel: Option<Cancel>,
+    cancels: HashMap<u64, Cancel>,
 }
 
 static QUEUE: Mutex<Option<QueueState>> = Mutex::new(None);
@@ -157,6 +168,7 @@ fn enqueue_job(key: String, action: Action, job: Job) -> bool {
     });
     if added {
         changed();
+        WAKE.notify_one();
     }
     if spawn {
         relm4::spawn(run_queue());
@@ -227,15 +239,15 @@ pub fn pkg_can_cancel(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> 
     with_queue(|q| q.key_item(&key).map(|(i, s)| s == Status::Queued || i.payload.cancellable())).unwrap_or(false)
 }
 
-/// Drops the queued entry, or asks the running one to stop. Cancelling a row
-/// of a running batch stops that whole Nix command.
+/// Drops the queued entry, or asks the running one to stop. Once Nix has started
+/// its commit, it finishes or rolls back by itself.
 pub fn cancel(id: u64) {
     let gone = with_state(|s| {
         let gone = s.queue.cancel_queued_id(id);
         if gone.is_none() {
-            let running = s.queue.running().and_then(|b| b.items.iter().find(|i| i.id == id));
-            if running.map_or(false, |i| i.payload.cancellable()) {
-                if let Some(c) = &s.cancel {
+            let running = s.queue.running().iter().find(|b| b.id() == id);
+            if running.map_or(false, |b| b.item.payload.cancellable()) {
+                if let Some(c) = s.cancels.get(&id) {
                     c.cancel();
                 }
             }
@@ -261,6 +273,7 @@ pub fn retry(id: u64) -> bool {
     });
     if ok {
         changed();
+        WAKE.notify_one();
     }
     if spawn {
         relm4::spawn(run_queue());
@@ -307,69 +320,90 @@ pub fn is_busy() -> bool {
 }
 
 pub fn has_running() -> bool {
-    with_queue(|q| q.running().is_some())
+    with_queue(|q| !q.running().is_empty())
 }
 
-/// Drops everything waiting and asks the running batch to stop, if it can be stopped; flagging
-/// one that cannot would report its own failure as a cancel.
+/// Drops everything waiting and asks the running jobs to stop, those that can be stopped;
+/// flagging one that cannot would report its own failure as a cancel.
 pub fn stop_all() {
-    let (gone, cancel) = with_state(|s| {
-        let stoppable = s.queue.running().map_or(false, |b| b.items.iter().all(|i| i.payload.cancellable()));
-        (s.queue.cancel_all_queued(), s.cancel.clone().filter(|_| stoppable))
+    let gone = with_state(|s| {
+        for b in s.queue.running().iter().filter(|b| b.item.payload.cancellable()) {
+            if let Some(c) = s.cancels.get(&b.id()) {
+                c.cancel();
+            }
+        }
+        s.queue.cancel_all_queued()
     });
     for item in &gone {
         finished(&item.payload, false);
     }
-    if let Some(c) = cancel {
-        c.cancel();
-    }
     changed();
 }
 
-/// Runs batches until the queue is empty. Every failure is reported and the
-/// loop goes on.
+/// Starts jobs as slots and memory allow until nothing waits. Every failure is
+/// reported and the loop goes on.
 async fn run_queue() {
     let nix = nix().await;
+    let slots = nix.slots();
     loop {
-        let cancel = Cancel::new();
-        let Some(batch) = with_state(|s| {
-            let batch = s.queue.start();
-            s.cancel = batch.as_ref().map(|_| cancel.clone());
-            batch
-        }) else {
-            break;
-        };
-        changed();
-
-        let result = run_batch(nix, &batch, &cancel).await;
-        let outcomes = with_state(|s| {
-            s.cancel = None;
-            s.queue.complete(result)
+        let admit = memory::has_room();
+        let started = with_state(|s| {
+            let start = s.queue.start(slots, admit);
+            let cancel = Cancel::new();
+            if let Start::Run(b) = &start {
+                s.cancels.insert(b.id(), cancel.clone());
+            }
+            (start, cancel)
         });
-
-        for o in &outcomes {
-            finished(&o.item.payload, o.result.is_ok());
+        match started {
+            (Start::Run(batch), cancel) => {
+                changed();
+                relm4::spawn(run_job(nix, batch, cancel));
+                if slots > 1 {
+                    tokio::time::sleep(SETTLE).await;
+                }
+            }
+            (Start::Wait, _) => {
+                let _ = tokio::time::timeout(GATE_POLL, WAKE.notified()).await;
+            }
+            (Start::Idle, _) => break,
         }
-        if !outcomes.is_empty() {
-            // One refresh per command, not per package.
-            PKGPAGE_BROKER.send(PkgMsg::ProfileBatchDone);
-        }
-        changed();
     }
     changed();
 }
 
-/// Output of the running command: every line goes to the log of its entries;
-/// the last few explain a failure.
-#[derive(Default)]
+async fn run_job(nix: &'static Nix, batch: queue::Batch<Job>, cancel: Cancel) {
+    let result = run_batch(nix, &batch, &cancel).await;
+    let outcome = with_state(|s| {
+        s.cancels.remove(&batch.id());
+        s.queue.complete(batch.id(), result)
+    });
+    if let Some(o) = outcome {
+        finished(&o.item.payload, o.result.is_ok());
+        // One refresh per completed job.
+        PKGPAGE_BROKER.send(PkgMsg::ProfileBatchDone);
+    }
+    changed();
+    WAKE.notify_one();
+}
+
+/// Output of one running job: every line goes to its log; the last few explain a failure.
 struct Lines {
+    id: u64,
     tail: VecDeque<String>,
 }
 
 impl Lines {
+    fn new(id: u64) -> Self {
+        Lines { id, tail: VecDeque::new() }
+    }
+
     fn push(&mut self, line: &str) {
+        if ops::is_noise(line) {
+            return;
+        }
         let line: String = line.chars().take(queue::MAX_LINE_CHARS).collect();
-        with_queue(|q| q.log_push(&line));
+        with_queue(|q| q.log_push(self.id, &line));
         if self.tail.len() == 12 {
             self.tail.pop_front();
         }
@@ -381,35 +415,32 @@ impl Lines {
     }
 }
 
-fn progress(s: &Summary) {
-    with_queue(|q| q.set_progress(s.fraction, s.label()));
+fn progress(id: u64, s: &Summary) {
+    with_queue(|q| q.set_progress(id, s.fraction, s.label()));
 }
 
 fn profile_sink(lines: &mut Lines) -> impl FnMut(Event) + Send + '_ {
     move |e| match e {
         Event::Line(_, line) => lines.push(&line),
-        Event::Progress(s) => progress(&s),
+        Event::Progress(s) => progress(lines.id, &s),
     }
 }
 
 async fn run_batch(nix: &Nix, batch: &queue::Batch<Job>, cancel: &Cancel) -> BatchResult {
-    let mut lines = Lines::default();
+    let mut lines = Lines::new(batch.id());
+    let key = batch.item.key.as_str();
     let res = match batch.action {
-        Action::Install => {
-            let installables: Result<Vec<String>, String> =
-                batch.keys().iter().map(|k| super::sourceinfo::installable(k)).collect();
-            match installables {
-                Ok(installables) => ops::add_many(nix, &installables, cancel, profile_sink(&mut lines)).await,
-                Err(e) => Err(anyhow::anyhow!(e)),
-            }
-        }
-        Action::Remove => match element_names(&batch.keys()).await {
+        Action::Install => match super::sourceinfo::installable(key) {
+            Ok(installable) => ops::add(nix, &installable, cancel, profile_sink(&mut lines)).await,
+            Err(e) => Err(anyhow::anyhow!(e)),
+        },
+        Action::Remove => match element_names(&[key.to_string()]).await {
             Ok(names) => ops::remove(nix, &names, cancel, profile_sink(&mut lines)).await,
             Err(e) => Err(e),
         },
         Action::Exclusive => {
             let mut sink = |line: String| lines.push(&line);
-            jobs::run(&batch.items[0].payload, cancel, &mut sink).await
+            jobs::run(&batch.item.payload, cancel, &mut sink).await
         }
     };
     match res {
@@ -430,9 +461,11 @@ async fn run_batch(nix: &Nix, batch: &queue::Batch<Job>, cancel: &Cancel) -> Bat
 /// Upgrades everything, after removing the entries behind `remove_first`.
 pub async fn upgrade_all(cancel: &Cancel, remove_first: &[String], sink: jobs::Sink<'_>) -> Result<bool> {
     let nix = nix().await;
+    // An exclusive job runs alone, so the one running job is this one.
+    let id = with_queue(|q| q.running().first().map_or(0, |b| b.id()));
     let on_event = |e: Event| match e {
         Event::Line(_, line) => sink(line),
-        Event::Progress(s) => progress(&s),
+        Event::Progress(s) => progress(id, &s),
     };
     if remove_first.is_empty() {
         return ops::upgrade_all(nix, cancel, on_event).await;

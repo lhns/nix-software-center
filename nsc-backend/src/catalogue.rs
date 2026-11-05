@@ -57,6 +57,13 @@ pub fn merged_path(dir: &Path, builtin: Option<&Builtin>, third: &[Third]) -> Pa
     dir.join(format!("merged-{:016x}.db", fnv1a(key.as_bytes())))
 }
 
+/// `merged-<16 hex digits>.db` only: never another instance's `merged-tmp-<pid>.db`.
+fn is_merged_name(n: &str) -> bool {
+    n.strip_prefix("merged-")
+        .and_then(|r| r.strip_suffix(".db"))
+        .map_or(false, |h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
 }
@@ -90,7 +97,7 @@ pub async fn merge(dir: &Path, builtin: Option<&Builtin>, third: &[Third]) -> Re
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with("merged-") && n.ends_with(".db") && e.path() != path {
+            if is_merged_name(&n) && e.path() != path {
                 let _ = std::fs::remove_file(e.path());
             }
         }

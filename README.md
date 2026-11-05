@@ -145,8 +145,10 @@ All in `nix profile` mode unless noted; the other modes behave as upstream.
 - **Add, remove, upgrade** with `nix profile add` (falls back to `install`), `remove <element>`
   and `upgrade --all`/`upgrade <element>`; no hardcoded `x86_64-linux`.
 - **Operations** show live output and structured progress (Nix's `json-log-path`, through a unix
-  socket in `NIX_CONFIG`), report the exit code, run one at a time app-wide, and cancel with
-  SIGINT to the process group so Nix can revert. The stdout pipe no longer deadlocks.
+  socket in `NIX_CONFIG`), report the exit code, and cancel with SIGINT to the process group so Nix can
+  revert. Installs and removals run up to 4 at once when Nix has the `profile-backend` setting
+  (it locks the commit), one at a time on stock Nix; a job also waits while its cgroup has less
+  than 1 GiB free. Updates and system/nix-env operations run alone. The stdout pipe no longer deadlocks.
 - **Package index**: `NSC_PKGDB` points at a SQLite index in nix-data's schema, which
   `nix/pkgdb.nix` generates at build time from a given nixpkgs (per system, no unfree), instead
   of downloading nix-data-db.

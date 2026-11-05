@@ -1,17 +1,20 @@
 //! The app-wide work queue as a state machine, free of UI and processes.
 //!
-//! One batch runs at a time (Nix serialises profile commits). `start` takes
-//! the next batch: all queued items with the action of the oldest one, minus
-//! those behind an opposite action on the same key, so a package is never
-//! reordered against itself. A failed batch of several is retried one item
-//! at a time before anything newer runs; a failure never stops the queue.
+//! Up to `slots` jobs run at once, one package per job. A job never starts
+//! while one with the same key is running or ahead of it, so a package is
+//! never reordered against itself. A failure never stops the queue.
 //! `Exclusive` items (updates, system and nix-env operations) run alone and
-//! are a barrier: batching never looks past one.
+//! are a barrier: nothing starts while one runs, and nothing starts past one.
+//!
+//! `start` is told whether memory allows another job (`admit`); when it does
+//! not, the job waits in the queue, except that an idle queue always starts one.
 //!
 //! Finished items stay in a bounded history, with their log, until removed.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
+/// Jobs that may run at once.
+pub const MAX_SLOTS: usize = 4;
 /// Most finished entries kept; at the cap the oldest non-failed one goes first.
 pub const MAX_FINISHED: usize = 50;
 /// A log keeps at most this many lines and bytes ...
@@ -43,14 +46,31 @@ pub struct Item<T> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch<T> {
     pub action: Action,
-    pub items: Vec<Item<T>>,
-    /// A single item re-run after its batch failed.
-    pub retry: bool,
+    pub item: Item<T>,
 }
 
 impl<T> Batch<T> {
-    pub fn keys(&self) -> Vec<String> {
-        self.items.iter().map(|i| i.key.clone()).collect()
+    /// What `complete`, `set_progress` and `log_push` take.
+    pub fn id(&self) -> u64 {
+        self.item.id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Start<T> {
+    Run(Batch<T>),
+    /// Items wait, but none may start now.
+    Wait,
+    /// Nothing waits; the runner claim is released.
+    Idle,
+}
+
+impl<T> Start<T> {
+    pub fn batch(self) -> Option<Batch<T>> {
+        match self {
+            Start::Run(b) => Some(b),
+            _ => None,
+        }
     }
 }
 
@@ -169,9 +189,8 @@ struct Finished<T> {
 #[derive(Debug)]
 pub struct Queue<T> {
     pending: VecDeque<Item<T>>,
-    retry: VecDeque<Item<T>>,
-    running: Option<Batch<T>>,
-    progress: Progress,
+    running: Vec<Batch<T>>,
+    progress: HashMap<u64, Progress>,
     /// Oldest first.
     finished: VecDeque<Finished<T>>,
     logs: HashMap<u64, LogBuffer>,
@@ -183,9 +202,8 @@ impl<T> Default for Queue<T> {
     fn default() -> Self {
         Queue {
             pending: VecDeque::new(),
-            retry: VecDeque::new(),
-            running: None,
-            progress: Progress::default(),
+            running: vec![],
+            progress: HashMap::new(),
             finished: VecDeque::new(),
             logs: HashMap::new(),
             next_id: 1,
@@ -217,9 +235,9 @@ impl<T: Clone> Queue<T> {
     }
 
     pub fn status(&self, key: &str, action: Action) -> Option<Status> {
-        if self.running.as_ref().map_or(false, |b| b.items.iter().any(|i| same(i, key, action))) {
+        if self.running.iter().any(|b| same(&b.item, key, action)) {
             Some(Status::Running)
-        } else if self.retry.iter().chain(&self.pending).any(|i| same(i, key, action)) {
+        } else if self.pending.iter().any(|i| same(i, key, action)) {
             Some(Status::Queued)
         } else {
             None
@@ -233,12 +251,11 @@ impl<T: Clone> Queue<T> {
 
     /// The item behind `key_status`.
     pub fn key_item(&self, key: &str) -> Option<(&Item<T>, Status)> {
-        if let Some(i) = self.running.as_ref().and_then(|b| b.items.iter().find(|i| i.key == key)) {
-            return Some((i, Status::Running));
+        if let Some(b) = self.running.iter().find(|b| b.item.key == key) {
+            return Some((&b.item, Status::Running));
         }
-        self.retry
+        self.pending
             .iter()
-            .chain(&self.pending)
             .rev()
             .find(|i| i.key == key)
             .map(|i| (i, Status::Queued))
@@ -246,53 +263,43 @@ impl<T: Clone> Queue<T> {
 
     /// Drops the queued, not yet started items for `key`; they become Cancelled in the history.
     pub fn cancel_queued(&mut self, key: &str) -> Vec<Item<T>> {
-        let mut gone = vec![];
-        for q in [&mut self.retry, &mut self.pending] {
-            let (hit, keep): (VecDeque<_>, VecDeque<_>) = q.drain(..).partition(|i| i.key == key);
-            *q = keep;
-            gone.extend(hit);
-        }
+        let (gone, keep): (VecDeque<_>, VecDeque<_>) = self.pending.drain(..).partition(|i| i.key == key);
+        self.pending = keep;
         for item in &gone {
             self.record(item.clone(), EntryState::Cancelled);
         }
-        gone
+        gone.into_iter().collect()
     }
 
     /// Like `cancel_queued`, for the one queued item `id`.
     pub fn cancel_queued_id(&mut self, id: u64) -> Option<Item<T>> {
-        let mut found = None;
-        for q in [&mut self.retry, &mut self.pending] {
-            if let Some(at) = q.iter().position(|i| i.id == id) {
-                found = q.remove(at);
-                break;
-            }
-        }
-        let item = found?;
+        let at = self.pending.iter().position(|i| i.id == id)?;
+        let item = self.pending.remove(at)?;
         self.record(item.clone(), EntryState::Cancelled);
         Some(item)
     }
 
-    /// Drops every queued item (the running batch is not touched).
+    /// Drops every queued item (running jobs are not touched).
     pub fn cancel_all_queued(&mut self) -> Vec<Item<T>> {
-        let items: Vec<_> = self.retry.drain(..).chain(self.pending.drain(..)).collect();
+        let items: Vec<_> = self.pending.drain(..).collect();
         for item in &items {
             self.record(item.clone(), EntryState::Cancelled);
         }
         items
     }
 
-    /// Items waiting, not counting the running batch.
+    /// Items waiting, not counting the running jobs.
     pub fn waiting(&self) -> usize {
-        self.retry.len() + self.pending.len()
+        self.pending.len()
     }
 
     /// Running plus waiting items.
     pub fn active(&self) -> usize {
-        self.waiting() + self.running.as_ref().map_or(0, |b| b.items.len())
+        self.waiting() + self.running.len()
     }
 
-    pub fn running(&self) -> Option<&Batch<T>> {
-        self.running.as_ref()
+    pub fn running(&self) -> &[Batch<T>] {
+        &self.running
     }
 
     /// True for the caller that must start the runner loop; `start` returning
@@ -301,71 +308,57 @@ impl<T: Clone> Queue<T> {
         !std::mem::replace(&mut self.runner, true)
     }
 
-    pub fn start(&mut self) -> Option<Batch<T>> {
-        let batch = if let Some(item) = self.retry.pop_front() {
-            self.log_line(item.id, "--- Retrying on its own ---");
-            Batch { action: item.action, items: vec![item], retry: true }
-        } else if let Some(action) = self.pending.front().map(|i| i.action) {
-            let mut items = vec![];
-            if action == Action::Exclusive {
-                items.extend(self.pending.pop_front());
-            } else {
-                let mut blocked = HashSet::new();
-                let mut barrier = false;
-                for i in std::mem::take(&mut self.pending) {
-                    barrier |= i.action == Action::Exclusive;
-                    if !barrier && i.action == action && !blocked.contains(&i.key) {
-                        items.push(i);
-                    } else {
-                        if i.action != action {
-                            blocked.insert(i.key.clone());
-                        }
-                        self.pending.push_back(i);
-                    }
-                }
-            }
-            Batch { action, items, retry: false }
-        } else {
+    /// Starts the oldest item that may run. `slots` caps the running jobs;
+    /// `admit` is false while memory is short.
+    pub fn start(&mut self, slots: usize, admit: bool) -> Start<T> {
+        if self.pending.is_empty() {
             self.runner = false;
-            return None;
+            return Start::Idle;
+        }
+        let idle = self.running.is_empty();
+        let exclusive = self.running.iter().any(|b| b.action == Action::Exclusive);
+        if exclusive || self.running.len() >= slots.max(1) || !(admit || idle) {
+            return Start::Wait;
+        }
+        let mut at = None;
+        for (n, i) in self.pending.iter().enumerate() {
+            if i.action == Action::Exclusive {
+                at = idle.then_some(n);
+                break;
+            }
+            let busy = self.running.iter().any(|b| b.item.key == i.key)
+                || self.pending.iter().take(n).any(|p| p.key == i.key);
+            if !busy {
+                at = Some(n);
+                break;
+            }
+        }
+        let Some(item) = at.and_then(|n| self.pending.remove(n)) else {
+            return Start::Wait;
         };
-        self.progress = Progress::default();
-        self.running = Some(batch.clone());
-        Some(batch)
+        let batch = Batch { action: item.action, item };
+        self.progress.insert(batch.id(), Progress::default());
+        self.running.push(batch.clone());
+        Start::Run(batch)
     }
 
-    /// Ends the running batch. A failed batch of several yields no outcomes:
-    /// its items are retried one by one first.
-    pub fn complete(&mut self, result: BatchResult) -> Vec<Outcome<T>> {
-        let Some(batch) = self.running.take() else {
-            return vec![];
-        };
+    /// Ends the running job `id`; `None` when no such job runs.
+    pub fn complete(&mut self, id: u64, result: BatchResult) -> Option<Outcome<T>> {
+        let at = self.running.iter().position(|b| b.id() == id)?;
+        let item = self.running.remove(at).item;
+        self.progress.remove(&id);
         let (err, cancelled) = match result {
             BatchResult::Done => (None, false),
             BatchResult::Cancelled => (Some("Cancelled".to_string()), true),
-            BatchResult::Failed(text) => {
-                if batch.items.len() > 1 {
-                    for item in batch.items.into_iter().rev() {
-                        self.retry.push_front(item);
-                    }
-                    return vec![];
-                }
-                (Some(text), false)
-            }
+            BatchResult::Failed(text) => (Some(text), false),
         };
         let state = match (&err, cancelled) {
             (None, _) => EntryState::Done,
             (Some(_), true) => EntryState::Cancelled,
             (Some(text), false) => EntryState::Failed(text.clone()),
         };
-        batch
-            .items
-            .into_iter()
-            .map(|item| {
-                self.record(item.clone(), state.clone());
-                Outcome { item, result: err.clone().map_or(Ok(()), Err), cancelled }
-            })
-            .collect()
+        self.record(item.clone(), state);
+        Some(Outcome { item, result: err.map_or(Ok(()), Err), cancelled })
     }
 
     fn record(&mut self, item: Item<T>, state: EntryState) {
@@ -437,14 +430,9 @@ impl<T: Clone> Queue<T> {
 
     /// Every entry in display order: running, up next, then finished, newest first.
     pub fn entries(&self) -> Vec<Entry<T>> {
-        let running = self.running.iter().flat_map(|b| &b.items).map(|i| self.entry(i, EntryState::Running, 0));
-        let ahead = self.running.as_ref().map_or(0, |b| b.items.len());
-        let queued = self
-            .retry
-            .iter()
-            .chain(&self.pending)
-            .enumerate()
-            .map(|(n, i)| self.entry(i, EntryState::Queued, ahead + n));
+        let running = self.running.iter().map(|b| self.entry(&b.item, EntryState::Running, 0));
+        let ahead = self.running.len();
+        let queued = self.pending.iter().enumerate().map(|(n, i)| self.entry(i, EntryState::Queued, ahead + n));
         let finished = self.finished.iter().rev().map(|f| self.entry(&f.item, f.state.clone(), 0));
         running.chain(queued).chain(finished).collect()
     }
@@ -459,20 +447,21 @@ impl<T: Clone> Queue<T> {
             key: i.key.clone(),
             action: i.action,
             payload: i.payload.clone(),
-            progress: (state == EntryState::Running).then(|| self.progress.clone()),
+            progress: self.progress.get(&i.id).filter(|_| state == EntryState::Running).cloned(),
             state,
             ahead,
         }
     }
 
-    pub fn set_progress(&mut self, fraction: Option<f64>, label: String) {
-        self.progress = Progress { fraction, label };
+    pub fn set_progress(&mut self, id: u64, fraction: Option<f64>, label: String) {
+        if let Some(p) = self.progress.get_mut(&id) {
+            *p = Progress { fraction, label };
+        }
     }
 
-    /// Appends a line to the log of every running item.
-    pub fn log_push(&mut self, line: &str) {
-        let ids: Vec<u64> = self.running.iter().flat_map(|b| &b.items).map(|i| i.id).collect();
-        for id in ids {
+    /// Appends a line to the log of the running job `id`.
+    pub fn log_push(&mut self, id: u64, line: &str) {
+        if self.running.iter().any(|b| b.id() == id) {
             self.log_line(id, line);
         }
     }

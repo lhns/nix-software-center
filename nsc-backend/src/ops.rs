@@ -1,5 +1,6 @@
-//! Profile operations. Each takes the process-wide operation lock for its
-//! whole duration and streams output through the caller's `on_event`.
+//! Profile operations, streaming output through the caller's `on_event`.
+//! Upgrades take the process-wide operation lock. Add and remove do not: the
+//! work queue limits how many run at once, and Nix locks the commit.
 
 use crate::profile;
 use crate::run::{self, Cancel, Event};
@@ -20,6 +21,9 @@ pub struct Nix {
     pub program: PathBuf,
     /// `None` when unknown; treated as a current Nix.
     pub version: Option<(u32, u32)>,
+    /// The Nix has the `profile-backend` setting: it commits profile changes under its own
+    /// lock, so several `nix profile` commands may run at once.
+    pub locking_commits: bool,
 }
 
 impl Nix {
@@ -27,6 +31,7 @@ impl Nix {
         Nix {
             program: program.into(),
             version: None,
+            locking_commits: false,
         }
     }
 
@@ -48,7 +53,26 @@ impl Nix {
             Ok(o) => log::warn!("nix --version failed: {}", o.status),
             Err(e) => log::warn!("nix --version: {e}"),
         }
+        nix.locking_commits = nix.has_setting("profile-backend").await;
         nix
+    }
+
+    async fn has_setting(&self, name: &str) -> bool {
+        let out = tokio::process::Command::new(&self.program)
+            .args(["config", "show", name])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+        matches!(out, Ok(o) if o.status.success() && !o.stdout.iter().all(u8::is_ascii_whitespace))
+    }
+
+    /// Profile commands that may run at once. Stock Nix does not lock commits, so one.
+    pub fn slots(&self) -> usize {
+        if self.locking_commits {
+            crate::queue::MAX_SLOTS
+        } else {
+            1
+        }
     }
 
     fn named_elements(&self) -> bool {
@@ -58,6 +82,11 @@ impl Nix {
     pub fn has_json_log_path(&self) -> bool {
         self.version.map_or(true, |v| v >= JSON_LOG_PATH)
     }
+}
+
+/// Nix prints this while another process holds the store database; it is not a problem.
+pub fn is_noise(line: &str) -> bool {
+    line.contains("SQLite database") && line.contains("is busy")
 }
 
 /// `nix (Nix) 2.34.9` -> (2, 34).
@@ -120,7 +149,6 @@ pub async fn add_many(
     if installables.is_empty() {
         return Ok(true);
     }
-    let _lock = run::lock().await;
     let rest = installables.to_vec();
     let verb = if USE_INSTALL.load(Ordering::Relaxed) { "install" } else { "add" };
     let (ok, unknown) = nix_run(
@@ -164,7 +192,6 @@ pub async fn remove(
     cancel: &Cancel,
     mut on_event: impl FnMut(Event) + Send,
 ) -> Result<bool> {
-    let _lock = run::lock().await;
     remove_locked(nix, names, cancel, &mut on_event).await
 }
 

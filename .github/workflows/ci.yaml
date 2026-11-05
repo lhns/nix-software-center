@@ -53,7 +53,7 @@ jobs:
         if: matrix.system == 'x86_64-linux'
         run: |
           nix build .#packages.${{ matrix.system }}.pkgdb-small -L -o pkgdb-small
-          nix build .#packages.${{ matrix.system }}.nix-software-center -L -o app
+          nix build .#packages.${{ matrix.system }}.nix-software-center-uitest -L -o app
           export XDG_RUNTIME_DIR=$(mktemp -d) HOME=$(mktemp -d)
           mkdir -p shots
           # hello and minimal match by name; the rest is hostile or malformed.

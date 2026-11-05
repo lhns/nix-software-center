@@ -13,6 +13,8 @@
   unfreeFlake ? null,
   # Whether "nixpkgs unfree" is listed until the user toggles it (NSC_UNFREE_LISTED_DEFAULT); null = yes.
   unfreeListedDefault ? null,
+  # Adds the screenshot hooks of src/ui/uitest.rs; only for the CI UI run.
+  withUiTestHooks ? false,
 }:
 pkgs.stdenv.mkDerivation {
   pname = "nix-software-center";
@@ -58,6 +60,8 @@ pkgs.stdenv.mkDerivation {
     desktop-file-utils
     nixos-appstream-data
   ];
+
+  mesonFlags = lib.optional withUiTestHooks "-Duitest=true";
 
   patchPhase = ''
     substituteInPlace ./src/lib.rs \
