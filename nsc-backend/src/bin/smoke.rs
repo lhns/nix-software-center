@@ -61,7 +61,7 @@ async fn real_main() -> Result<()> {
         return match_report(&m, pkgdb_path.context("--system-manifest needs --pkgdb or $NSC_PKGDB")?).await;
     }
     if installables.is_empty() {
-        bail!("usage: nsc-backend-smoke <installable>... [--pkgdb <file>] [--require-progress]");
+        bail!("usage: nsc-backend-smoke <installable>... [--pkgdb <file>] [--require-progress] | --system-manifest <file>");
     }
 
     let nix = ops::Nix::detect().await;

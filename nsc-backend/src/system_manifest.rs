@@ -6,9 +6,9 @@
 //! ```
 //!
 //! Matching is by `pname` and `version` against the built-in catalogue (see `pick`): the catalogue
-//! has no store paths (computing them means instantiating every derivation), so `path` is informational. Only
-//! built-in attributes match; a third-party source's `<id>:<attr>` never does. The file is
-//! untrusted input: size-capped, parsed leniently, bound as SQL parameters only.
+//! has no store paths (computing them means instantiating every derivation), so `path` is
+//! informational. Only built-in attributes match; a third-party source's `<id>:<attr>` never does.
+//! The file is untrusted input: size-capped, parsed leniently, bound as SQL parameters only.
 
 use serde::Deserialize;
 use sqlx::SqlitePool;
