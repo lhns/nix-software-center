@@ -195,6 +195,15 @@ impl FactoryComponent for SearchItemModel {
                             set_icon_name: Some("emblem-default-symbolic"),
                             #[watch]
                             set_visible: self.item.installedsystem,
+                        },
+                        gtk::Image {
+                            add_css_class: "success",
+                            set_valign: gtk::Align::Start,
+                            set_halign: gtk::Align::End,
+                            set_icon_name: Some("emblem-default-symbolic"),
+                            set_tooltip_text: Some("Included with desktop"),
+                            #[watch]
+                            set_visible: super::included::shown(&self.item.pkg, self.item.installeduser),
                         }
                     },
                     gtk::Box {

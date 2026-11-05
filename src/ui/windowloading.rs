@@ -95,6 +95,8 @@ impl Worker for WindowAsyncHandler {
                         }
                     };
 
+                    super::included::load(&pool).await;
+
                     let nixpkgsdb = match userpkgs {
                         UserPkgs::Profile => {
                             if fixeddb.is_some() {

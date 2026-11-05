@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use super::included;
 use relm4::adw::prelude::*;
 use relm4::gtk::pango;
 use relm4::{factory::*, *};
@@ -62,6 +63,18 @@ impl FactoryComponent for PkgTile {
                         set_icon_name: Some("emblem-default-symbolic"),
                         #[watch]
                         set_visible: self.installedsystem,
+                    },
+                    gtk::Image {
+                        add_css_class: "success",
+                        set_valign: gtk::Align::Start,
+                        set_halign: gtk::Align::End,
+                        set_pixel_size: 16,
+                        set_margin_top: 8,
+                        set_margin_end: 8,
+                        set_icon_name: Some("emblem-default-symbolic"),
+                        set_tooltip_text: Some("Included with desktop"),
+                        #[watch]
+                        set_visible: included::shown(&self.pkg, self.installeduser),
                     }
                 },
                 gtk::Button {

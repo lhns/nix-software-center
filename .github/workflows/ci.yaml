@@ -56,6 +56,10 @@ jobs:
           nix build .#packages.${{ matrix.system }}.nix-software-center -L -o app
           export XDG_RUNTIME_DIR=$(mktemp -d) HOME=$(mktemp -d)
           mkdir -p shots
+          # hello and minimal match by name; the rest is hostile or malformed.
+          cat > shots/manifest.json <<'EOF'
+          {"packages":[{"pname":"hello","version":"1.0","path":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hello-1.0"},{"pname":"minimal"},{"pname":"<b>x</b> & \"q\""},{"pname":5},null]}
+          EOF
           export NSC_UI_TEST=$PWD/shots NSC_PKGDB=$(readlink -f pkgdb-small)/nixpkgs.db NSC_ONLINE_CHECK_URL= GSK_RENDERER=cairo
           nix shell nixpkgs#weston nixpkgs#dbus -c bash -euo pipefail -c '
             weston --backend=headless --socket=wl-ci &
@@ -70,10 +74,15 @@ jobs:
               [ "$rc" = 0 ] || { echo "::error::app exited with $rc"; exit 1; }
               ! grep -E "panicked|LoadError|Error retrieving|Error connecting|Error merging" "shots/$log" || { echo "::error::error in log"; exit 1; }
             }
-            run_app app.log NSC_TEST=1
+            # Set but unreadable: the feature is off and the app still starts. Before the real run,
+            # which writes the screenshots last.
+            run_app app-badmanifest.log NSC_TEST=1 NSC_SYSTEM_MANIFEST=$PWD/shots/missing.json
+            grep -q "Ignoring NSC_SYSTEM_MANIFEST" shots/app-badmanifest.log || { echo "::error::no warning"; exit 1; }
+            run_app app.log NSC_TEST=1 NSC_SYSTEM_MANIFEST=$PWD/shots/manifest.json
+            grep -q "system manifest: 3 entries, 2 catalogue apps" shots/app.log || { echo "::error::manifest not resolved"; exit 1; }
             # System packages off on a (faked) NixOS: no welcome screen, preferences hold only Sources.
             run_app app-nosys.log NSC_SYSTEM_PACKAGES=0 NSC_FAKE_NIXOS=1
-            for f in 01-activity 02-modal-running 03-hidden 04-modal-queued 05-modal-failed 06-badge 07-tile-unfree 08-sources 09-add-source 10-consent-hostile 11-pkgpage-unfree 12-consent-real 13-installed nosys-01-main nosys-02-preferences; do
+            for f in 01-activity 02-modal-running 03-hidden 04-modal-queued 05-modal-failed 06-badge 07-tile-unfree 08-sources 09-add-source 10-consent-hostile 11-pkgpage-unfree 12-consent-real 13-installed 14-pkgpage-included 15-tile-included nosys-01-main nosys-02-preferences; do
               [ -s "shots/$f.png" ] || { echo "::error::missing $f.png"; exit 1; }
             done
           '
