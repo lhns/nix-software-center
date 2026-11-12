@@ -148,3 +148,20 @@ fn only_one_caller_claims_the_runner() {
     assert_eq!(q.start(MAX_SLOTS, true), Start::Idle);
     assert!(q.claim_runner());
 }
+
+#[test]
+fn a_run_shares_slots_with_installs_and_is_no_barrier() {
+    let mut q = Queue::default();
+    assert!(q.enqueue(it("run:a", Run)));
+    assert!(q.enqueue(it("a", Install)));
+    assert!(q.enqueue(it("run:b", Run)));
+    assert!(!q.enqueue(it("run:a", Run)));
+    let ran: Vec<_> = std::iter::from_fn(|| start(&mut q)).map(|b| (key(&b).to_string(), b.action)).collect();
+    assert_eq!(ran, [("run:a".into(), Run), ("a".into(), Install), ("run:b".into(), Run)]);
+    // One slot: a run waits for a running install like any other job.
+    let mut q = Queue::default();
+    q.enqueue(it("a", Install));
+    q.enqueue(it("run:a", Run));
+    assert!(q.start(1, true).batch().is_some());
+    assert!(matches!(q.start(1, true), Start::Wait));
+}
