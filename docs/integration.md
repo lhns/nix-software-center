@@ -13,7 +13,8 @@ How this fork ships in the per-user desktops (webtop-nix and kube-webtop-workspa
 | smoke binary | `$out/libexec/nix-software-center/nsc-backend-smoke` | headless; same backend functions as the UI; reads `NSC_PKGDB` |
 | AppStream data | `nix/appstream.nix` | snowfallorg/nixos-appstream-data, free and unfree sections merged, 64/128 px icons |
 
-The app only runs `nix profile list --json|add|remove|upgrade`. It knows nothing about
+The app runs `nix profile list --json|add|remove|upgrade`, and for "Run without installing"
+`nix build --no-link --print-out-paths` and `nix eval --raw` (below). It knows nothing about
 home-manager, profile hooks or kww; success is the exit code, the installed list is re-read
 from `nix profile list --json` after each command, and progress comes from `json-log-path`
 (a unix socket passed through `NIX_CONFIG`), so nested `nix` calls a hook makes show up too.
@@ -27,6 +28,29 @@ run alone and nothing queued after them starts first. Finished entries (with the
 tab until removed. Cancel stops the running batch without retrying, so every package in it can be
 retried; a queued entry is simply dropped. Removing asks for confirmation first. The smoke binary
 accepts several installables (one `add`).
+
+### Run without installing
+
+The package page's Install button has a second entry, "Run without installing" (profile mode;
+the nix-env mode and "Open interactive shell" are upstream's). It is an Activity entry, so it has
+progress, a log, cancel and retry. It never touches the profile.
+
+- It builds the same installable an install would use (`nixpkgs`, `NSC_UNFREE_FLAKE` or the
+  source's flake) with `nix build --no-link --print-out-paths`. There is no GC root: the paths
+  stay in the store until a garbage collection, and the next run builds or fetches them again.
+- Unfree apps ask for consent on every run; nothing records the acceptance.
+- What it starts, first match: the app's AppStream desktop id in the outputs'
+  `share/applications`; else their only visible `.desktop` file; else `bin/<main program>`, where
+  the name is `meta.mainProgram`, else `pname` (`nix eval --raw`). Otherwise the entry fails and
+  suggests "Open interactive shell".
+- The outputs' `bin` and `share` go in front of `PATH` and `XDG_DATA_DIRS`. Desktop entries are
+  read by the app (`Exec`, `Path`, `Terminal`), not through gtk-launch, because D-Bus activation
+  cannot find the service file of a package that is not installed. Graphical apps get their own
+  session and outlive the software center. Terminal entries and programs open the terminal
+  (`$TERMINAL`, `xdg-terminal-exec`, ...) with the environment set, and stay in a shell.
+
+`nsc-backend-smoke --run <installable> [--desktop-id <id>]` does the same with the same functions
+(a terminal target runs directly, no terminal) and checks the profile elements are unchanged.
 
 ## webtop-nix
 

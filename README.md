@@ -159,6 +159,9 @@ All in `nix profile` mode unless noted; the other modes behave as upstream.
   overrides (or, empty, disables) the `nmcheck.gnome.org` check; no gtksourceview5.
 - **Activity tab**: one app-wide queue for installs, removals and updates, with a log modal per
   entry, retry and cancel. Profile installs and removals run as batches.
+- **Run without installing**: the second entry of the Install button builds the package with
+  `nix build --no-link` and starts its app or program as an Activity entry (progress, log, cancel).
+  Nothing is added to the profile; unfree apps ask for consent on every run.
 - **Package sources**: flakes that publish a catalogue, managed under Preferences (Sources), with
   an "nixpkgs unfree" built-in and a consent dialog for unfree apps.
 - **Included with desktop**: `NSC_SYSTEM_MANIFEST` marks apps the system image already ships.
