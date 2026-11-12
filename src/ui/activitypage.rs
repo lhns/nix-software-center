@@ -253,6 +253,7 @@ fn row(e: &Entry<Job>) -> (adw::ActionRow, Option<gtk::ProgressBar>) {
         EntryState::Queued | EntryState::Running if userops::can_cancel(e) => {
             let tip = match (&e.state, e.action, &e.payload.kind) {
                 (EntryState::Queued, ..) => "Remove from the queue",
+                (_, Action::Run, _) => "Stop building; an app that has started keeps running",
                 (_, Action::Exclusive, JobKind::Update(_)) => "Stop this update",
                 (_, Action::Exclusive, _) => "Stop this operation",
                 _ => "Stops the whole Nix command: every package in it is cancelled and can be retried",

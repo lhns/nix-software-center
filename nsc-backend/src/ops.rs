@@ -1,9 +1,10 @@
-//! Profile operations, streaming output through the caller's `on_event`.
+//! Profile operations and the build behind "run without installing", streaming output
+//! through the caller's `on_event`.
 //! Upgrades take the process-wide operation lock. Add and remove do not: the
 //! work queue limits how many run at once, and Nix locks the commit.
 
 use crate::profile;
-use crate::run::{self, Cancel, Event};
+use crate::run::{self, Cancel, Event, Stream};
 use anyhow::{bail, Result};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -165,6 +166,53 @@ pub async fn add_many(
     USE_INSTALL.store(true, Ordering::Relaxed);
     let (ok, _) = nix_run(nix, &args(&["profile", "install"], &rest), cancel, &mut on_event, "").await?;
     Ok(ok)
+}
+
+/// `nix build --no-link --print-out-paths <installable>`: the output paths, or `None` when the
+/// build failed. No link, so nothing roots the paths and a garbage collection may take them.
+pub async fn build(
+    nix: &Nix,
+    installable: &str,
+    cancel: &Cancel,
+    mut on_event: impl FnMut(Event) + Send,
+) -> Result<Option<Vec<PathBuf>>> {
+    let a = args(&["build", "--no-link", "--print-out-paths"], &[installable.to_string()]);
+    let mut outs = vec![];
+    let wrapped = |e: Event| match e {
+        Event::Line(Stream::Stdout, l) => {
+            if !l.is_empty() {
+                outs.push(PathBuf::from(l));
+            }
+        }
+        e => on_event(e),
+    };
+    let status = if nix.has_json_log_path() {
+        run::run_with_progress(nix.program.as_os_str(), &a, cancel, wrapped).await?
+    } else {
+        run::run(nix.program.as_os_str(), &a, cancel, wrapped).await?
+    };
+    Ok(status.success().then_some(outs))
+}
+
+/// The program a package is for: `meta.mainProgram`, else `pname`, else the name without version.
+pub async fn main_program(
+    nix: &Nix,
+    installable: &str,
+    cancel: &Cancel,
+    mut on_event: impl FnMut(Event) + Send,
+) -> Result<String> {
+    const APPLY: &str = "p: p.meta.mainProgram or p.pname or (builtins.parseDrvName p.name).name";
+    let a = args(&["eval", "--raw", installable, "--apply", APPLY], &[]);
+    let mut out = String::new();
+    let status = run::run(nix.program.as_os_str(), &a, cancel, |e| match e {
+        Event::Line(Stream::Stdout, l) => out.push_str(&l),
+        e => on_event(e),
+    })
+    .await?;
+    if !status.success() {
+        bail!("cannot find the program of {installable}");
+    }
+    Ok(out)
 }
 
 /// Element selectors for remove/upgrade: names, or attrPaths before Nix 2.20

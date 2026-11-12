@@ -1,6 +1,7 @@
 //! The app-wide work queue as a state machine, free of UI and processes.
 //!
-//! Up to `slots` jobs run at once, one package per job. A job never starts
+//! Up to `slots` jobs run at once, one package per job (a run-without-installing job
+//! counts like an install or removal: same slots and memory gate, never batched). A job never starts
 //! while one with the same key is running or ahead of it, so a package is
 //! never reordered against itself. A failure never stops the queue.
 //! `Exclusive` items (updates, system and nix-env operations) run alone and
@@ -29,6 +30,8 @@ pub const FINISHED_LOG_BYTES: usize = 256 << 10;
 pub enum Action {
     Install,
     Remove,
+    /// Builds a package into the store and starts it; the profile is untouched.
+    Run,
     /// Runs alone, never batched.
     Exclusive,
 }

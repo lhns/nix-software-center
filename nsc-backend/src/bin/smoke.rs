@@ -2,13 +2,15 @@
 //! functions the UI calls. Run as the desktop user.
 //!
 //! Usage: nsc-backend-smoke <installable>... [--pkgdb <file>] [--require-progress]
+//! `--run <installable> [--desktop-id <id>]` instead builds and starts it without installing, as
+//! "Run without installing" does, and checks the profile is unchanged.
 //! `--pkgdb` defaults to $NSC_PKGDB.
 //! `--system-manifest <file>` instead prints how each entry of a system manifest matches the
 //! package database (no installables, no nix).
 
 use anyhow::{bail, Context, Result};
 use nsc_backend::run::{Cancel, Event, Stream};
-use nsc_backend::{ops, pkgdb, profile};
+use nsc_backend::{launch, ops, pkgdb, profile};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -25,6 +27,44 @@ fn show(e: Event) {
 
 async fn names(nix: &ops::Nix) -> Result<HashSet<String>> {
     Ok(profile::list(nix).await?.into_iter().map(|e| e.name).collect())
+}
+
+async fn run_without_installing(installable: &str, desktop_id: Option<&str>) -> Result<()> {
+    let nix = ops::Nix::detect().await;
+    println!("1. nix version: {:?}", nix.version);
+    let before = names(&nix).await?;
+    println!("2. list: {} elements", before.len());
+
+    println!("3. build {installable}");
+    let cancel = Cancel::new();
+    let Some(outs) = ops::build(&nix, installable, &cancel, show).await? else {
+        bail!("build failed");
+    };
+    for o in &outs {
+        println!("run: out {}", o.display());
+    }
+
+    let target = launch::resolve(&nix, installable, installable, &outs, desktop_id, &cancel, show).await?;
+    let env = launch::current_env(&outs);
+    match target.kind {
+        launch::Kind::Desktop => println!("run: target desktop {}", target.path.display()),
+        launch::Kind::Program => println!("run: target program {}", target.path.display()),
+    }
+    if target.kind == launch::Kind::Desktop && !target.exec.terminal {
+        launch::spawn_detached(&target.exec, &env)?;
+    } else {
+        let status = launch::run_foreground(&target.exec, &env)?;
+        if !status.success() {
+            bail!("{:?} exited with {status}", target.exec.argv);
+        }
+    }
+
+    let after = names(&nix).await?;
+    if after != before {
+        bail!("profile changed: {before:?} -> {after:?}");
+    }
+    println!("4. ok: profile unchanged");
+    Ok(())
 }
 
 async fn match_report(manifest: &std::path::Path, db: PathBuf) -> Result<()> {
@@ -46,12 +86,16 @@ async fn real_main() -> Result<()> {
     let mut pkgdb_path = None;
     let mut require_progress = false;
     let mut manifest = None;
+    let mut run = None;
+    let mut desktop_id = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--pkgdb" => pkgdb_path = Some(PathBuf::from(it.next().context("--pkgdb needs a file")?)),
             "--require-progress" => require_progress = true,
             "--system-manifest" => manifest = Some(PathBuf::from(it.next().context("--system-manifest needs a file")?)),
+            "--run" => run = Some(it.next().context("--run needs an installable")?),
+            "--desktop-id" => desktop_id = Some(it.next().context("--desktop-id needs an id")?),
             _ if a.starts_with("--") => bail!("unexpected argument {a}"),
             _ => installables.push(a),
         }
@@ -60,8 +104,11 @@ async fn real_main() -> Result<()> {
     if let Some(m) = manifest {
         return match_report(&m, pkgdb_path.context("--system-manifest needs --pkgdb or $NSC_PKGDB")?).await;
     }
+    if let Some(installable) = run {
+        return run_without_installing(&installable, desktop_id.as_deref()).await;
+    }
     if installables.is_empty() {
-        bail!("usage: nsc-backend-smoke <installable>... [--pkgdb <file>] [--require-progress] | --system-manifest <file>");
+        bail!("usage: nsc-backend-smoke <installable>... [--pkgdb <file>] [--require-progress] | --run <installable> [--desktop-id <id>] | --system-manifest <file>");
     }
 
     let nix = ops::Nix::detect().await;

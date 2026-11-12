@@ -3,6 +3,7 @@
 
 pub mod catalogue;
 pub mod helper;
+pub mod launch;
 pub mod memory;
 pub mod ops;
 pub mod pkgdb;

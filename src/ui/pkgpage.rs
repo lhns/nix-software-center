@@ -26,6 +26,8 @@ use crate::parse::packages::PkgMaintainer;
 use crate::parse::util;
 
 use nsc_backend::shell;
+use super::term::{in_path, launchterm};
+use super::jobs::RunJob;
 use super::{activitylog::LogMsg, sourceinfo, userops, window::ACTIVITYLOG_BROKER};
 use super::window::SystemPkgs;
 use super::included;
@@ -1513,50 +1515,34 @@ impl Component for PkgModel {
                     }
                 }
             }
-            PkgMsg::NixRun => {
-                let installable = match sourceinfo::installable(&self.pkg) {
-                    Ok(i) => i,
-                    Err(e) => {
-                        warn!("Cannot run {}: {}", self.pkg, e);
+            PkgMsg::NixRun => match self.userpkgtype {
+                UserPkgs::Env => match &self.launchable {
+                    Some(Launch::GtkApp(x)) => {
+                        debug!("Launching {} with nix-shell", x);
+                        let _ = Command::new("nix-shell")
+                            .arg("-p")
+                            .arg(&self.pkg)
+                            .arg("--command")
+                            .arg(&format!("XDG_DATA_DIRS=$XDG_DATA_DIRS:$buildInputs/share gtk-launch {}", shell::quote(x)))
+                            .spawn();
+                    }
+                    Some(Launch::TerminalApp(x)) => launchterm(&shell::terminal_run(&self.pkg, x)),
+                    None => launchterm(&shell::terminal_run(&self.pkg, &self.pname)),
+                },
+                UserPkgs::Profile => {
+                    if !util::checkonline() {
+                        sender.output(AppMsg::CheckNetwork);
+                        self.online = false;
                         return;
                     }
-                };
-                if let Some(l) = &self.launchable {
-                    match l {
-                        Launch::GtkApp(x) => {
-                            match self.userpkgtype {
-                                UserPkgs::Env => {
-                                    debug!("Launching {} with nix-shell", x);
-                                    let _ = Command::new("nix-shell")
-                                        .arg("-p")
-                                        .arg(&self.pkg)
-                                        .arg("--command")
-                                        .arg(&format!("XDG_DATA_DIRS=$XDG_DATA_DIRS:$buildInputs/share gtk-launch {}", shell::quote(x)))
-                                        .spawn();
-                                }
-                                UserPkgs::Profile => {
-                                    debug!("Launching {} with nix shell", x);
-                                    let _ = Command::new("nix")
-                                        .arg("shell")
-                                        .arg(&installable)
-                                        .arg("--command")
-                                        .arg("bash")
-                                        .arg("-c")
-                                        .arg(shell::gtk_launch(&installable, x))
-                                        .spawn();
-                                }
-                            }
-                        }
-                        Launch::TerminalApp(x) => {
-                            let env = self.userpkgtype == UserPkgs::Env;
-                            launchterm(&shell::terminal_run(env, &self.pkg, &installable, x));
-                        }
-                    }
-                } else {
-                    let env = self.userpkgtype == UserPkgs::Env;
-                    launchterm(&shell::terminal_run(env, &self.pkg, &installable, &self.pname));
+                    let desktop_id = match &self.launchable {
+                        Some(Launch::GtkApp(id)) => Some(id.clone()),
+                        _ => None,
+                    };
+                    let job = RunJob { pkg: self.pkg.to_string(), pname: self.pname.to_string(), desktop_id };
+                    self.queue_run(job);
                 }
-            }
+            },
             PkgMsg::NixShell => {
                 let quoted = match sourceinfo::installable(&self.pkg) {
                     Ok(i) => shell::quote(&i),
@@ -1630,45 +1616,6 @@ impl Component for PkgModel {
     }
 }
 
-/// Executable file called `name` in a `PATH` directory (`command -v` is a shell builtin).
-fn in_path(name: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    env::var_os("PATH").map_or(false, |path| {
-        env::split_paths(&path).any(|dir| {
-            fs::metadata(dir.join(name)).map_or(false, |m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-    })
-}
-
-/// Runs `cmd` with `sh -c` in a terminal: `$TERMINAL`, `xdg-terminal-exec`, then the first known one.
-fn launchterm(cmd: &str) {
-    let term = env::var("TERMINAL").ok().filter(|t| !t.is_empty());
-    let (prog, args): (String, Vec<&str>) = if let Some(t) = term {
-        (t, vec!["-e"])
-    } else if in_path("xdg-terminal-exec") {
-        ("xdg-terminal-exec".into(), vec![])
-    } else if let Some((p, a)) = [
-        ("konsole", vec!["-e"]),
-        ("gnome-console", vec!["-e"]),
-        ("kgx", vec!["-e"]),
-        ("gnome-terminal", vec!["--"]),
-        ("xfce4-terminal", vec!["-x"]),
-        ("alacritty", vec!["-e"]),
-        ("xterm", vec!["-e"]),
-    ]
-    .into_iter()
-    .find(|(p, _)| in_path(p))
-    {
-        (p.into(), a)
-    } else {
-        warn!("No terminal found; set $TERMINAL");
-        return;
-    };
-    if let Err(e) = Command::new(&prog).args(args).args(["sh", "-c", cmd]).spawn() {
-        warn!("Failed to start terminal {}: {}", prog, e);
-    }
-}
-
 relm4::new_action_group!(ModeActionGroup, "mode");
 relm4::new_stateless_action!(NixEnvAction, ModeActionGroup, "env");
 relm4::new_stateless_action!(NixProfileAction, ModeActionGroup, "profile");
@@ -1695,9 +1642,35 @@ impl PkgModel {
         } else if w.action == PkgAction::Install && sourceinfo::is_unfree(&w.pkg) {
             // The licence is known for the page's own package only.
             let licence = if w.pkg == self.pkg { licence_text(&self.licenses) } else { String::new() };
-            confirm_unfree(w, licence, ctx, sender.output_sender().clone());
+            let (out, out_declined) = (sender.output_sender().clone(), sender.output_sender().clone());
+            let (accepted, declined) = (w.clone(), w.clone());
+            confirm_unfree(
+                w.display_name().to_string(),
+                licence,
+                false,
+                move || enqueue_work(accepted.clone(), ctx.clone(), &out),
+                move || {
+                    if declined.notify.is_some() {
+                        out_declined.emit(AppMsg::RemoveInstalledBusy(declined.clone()));
+                    }
+                },
+            );
         } else {
             enqueue_work(w, ctx, sender.output_sender());
+        }
+    }
+
+    /// Runs the page's package without installing it; unfree software asks every time, since
+    /// nothing records the acceptance.
+    fn queue_run(&mut self, job: RunJob) {
+        let ctx = self.ctx();
+        if sourceinfo::is_unfree(&job.pkg) {
+            let name = job.display_name().to_string();
+            confirm_unfree(name, licence_text(&self.licenses), true, move || {
+                userops::enqueue_run(job.clone(), ctx.clone());
+            }, || {});
+        } else {
+            userops::enqueue_run(job, ctx);
         }
     }
 }
@@ -1723,37 +1696,41 @@ fn licence_text(licenses: &[License]) -> String {
 
 /// The consent dialog for unfree software. Cancel is the default; the app and licence are plain text.
 pub fn unfree_dialog(name: &str, licence: &str) -> adw::MessageDialog {
+    unfree_dialog_for(name, licence, false)
+}
+
+fn unfree_dialog_for(name: &str, licence: &str, run: bool) -> adw::MessageDialog {
+    let (verb, ing) = if run { ("Run", "Running") } else { ("Install", "Installing") };
     let licence = if licence.is_empty() { "not free (see the app's page)" } else { licence };
     let dialog = adw::MessageDialog::new(
         relm4::main_application().active_window().as_ref(),
-        Some("Install unfree software?"),
+        Some(&format!("{verb} unfree software?")),
         Some(&format!(
             "{name} is not free software.
 Licence: {licence}
 
-Installing it means you accept its licence terms."
+{ing} it means you accept its licence terms."
         )),
     );
     dialog.set_heading_use_markup(false);
     dialog.set_body_use_markup(false);
     dialog.add_response("cancel", "Cancel");
-    dialog.add_response("install", "Install");
-    dialog.set_response_appearance("install", adw::ResponseAppearance::Suggested);
+    dialog.add_response("accept", verb);
+    dialog.set_response_appearance("accept", adw::ResponseAppearance::Suggested);
     dialog.set_default_response(Some("cancel"));
     dialog.set_close_response("cancel");
     dialog
 }
 
-/// Asks at the Install click, never when a queued item starts; the installed element is the
-/// acceptance, so updates and restores do not ask again.
-fn confirm_unfree(w: WorkPkg, licence: String, ctx: userops::Ctx, out: relm4::Sender<AppMsg>) {
-    let name = w.display_name().to_string();
-    let dialog = unfree_dialog(&name, &licence);
+/// Asks at the Install or Run click, never when a queued item starts. An installed element is the
+/// acceptance, so updates and restores do not ask again; a run leaves none.
+fn confirm_unfree(name: String, licence: String, run: bool, accept: impl Fn() + 'static, decline: impl Fn() + 'static) {
+    let dialog = unfree_dialog_for(&name, &licence, run);
     dialog.connect_response(None, move |_, response| {
-        if response == "install" {
-            enqueue_work(w.clone(), ctx.clone(), &out);
-        } else if w.notify.is_some() {
-            out.emit(AppMsg::RemoveInstalledBusy(w.clone()));
+        if response == "accept" {
+            accept();
+        } else {
+            decline();
         }
     });
     dialog.present();

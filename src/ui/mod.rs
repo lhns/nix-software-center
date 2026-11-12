@@ -14,6 +14,7 @@ pub mod screenshotfactory;
 pub mod searchpage;
 pub mod sourceinfo;
 pub mod sourcespage;
+pub mod term;
 #[cfg(feature = "uitest")]
 pub mod uitest;
 pub mod unavailabledialog;

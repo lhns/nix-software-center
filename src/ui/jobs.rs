@@ -1,5 +1,6 @@
 //! What the app-wide queue runs besides profile batches: updates and the
-//! system and nix-env package operations. These are `Action::Exclusive`.
+//! system and nix-env package operations (`Action::Exclusive`), and running a package
+//! without installing it (`Action::Run`, executed by `userops`).
 
 use super::{
     pkgpage::{InstallType, PkgAction, WorkPkg},
@@ -30,6 +31,27 @@ pub struct Job {
 pub enum JobKind {
     Pkg(WorkPkg),
     Update(UpdateJob),
+    Run(RunJob),
+}
+
+/// Build a package into the store and start it, leaving the profile alone.
+#[derive(Debug, Clone)]
+pub struct RunJob {
+    /// The package attribute as the page knows it, `<source>:<attr>` for a third-party app.
+    pub pkg: String,
+    pub pname: String,
+    /// The AppStream desktop id of the app, if the page has one.
+    pub desktop_id: Option<String>,
+}
+
+impl RunJob {
+    pub fn display_name(&self) -> &str {
+        if self.pname.is_empty() {
+            &self.pkg
+        } else {
+            &self.pname
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +84,7 @@ impl Job {
                 format!("{what} {}", w.display_name())
             }
             JobKind::Update(u) => u.title().to_string(),
+            JobKind::Run(r) => format!("Run {}", r.display_name()),
         }
     }
 
@@ -74,6 +97,7 @@ impl Job {
                 (InstallType::User, UserPkgs::Profile) => "Profile",
             },
             JobKind::Update(_) => "Update",
+            JobKind::Run(_) => "Run",
         }
     }
 
@@ -83,6 +107,7 @@ impl Job {
             JobKind::Pkg(w) if w.action == PkgAction::Install => "Cancel Install",
             JobKind::Pkg(_) => "Cancel Removal",
             JobKind::Update(_) => "Cancel Update",
+            JobKind::Run(_) => "Cancel Run",
         }
     }
 
@@ -95,6 +120,7 @@ impl Job {
                 UpdateType::User => self.userpkgs == UserPkgs::Profile,
                 _ => false,
             },
+            JobKind::Run(_) => true,
         }
     }
 }
@@ -145,6 +171,7 @@ pub async fn run(job: &Job, cancel: &Cancel, sink: Sink<'_>) -> Result<bool> {
                 installsys(work.pkg.to_string(), work.action.clone(), config, sink).await
             }
         },
+        JobKind::Run(_) => Err(anyhow!("a run is not an exclusive job")),
         JobKind::Update(u) => match u.scope {
             UpdateType::System => runcmd(config, job.syspkgs.clone(), u.rm_sys.clone(), sink).await,
             UpdateType::User => updateuser(job, u.rm_user.clone(), cancel, sink).await,
