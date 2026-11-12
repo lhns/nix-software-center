@@ -219,9 +219,9 @@ pub fn enqueue_update(update: UpdateJob, ctx: Ctx) -> bool {
     enqueue_job(key.to_string(), Action::Exclusive, job)
 }
 
-/// Queue key of running the package without installing it; never an install's key.
+/// Queue key of running the package without installing it. `/` is in no source id or attribute, so it is never an install's key.
 fn run_key(pkg: &str) -> String {
-    format!("run:{pkg}")
+    format!("run/{pkg}")
 }
 
 /// The package's queued or running install or removal, else its run (profile only).
