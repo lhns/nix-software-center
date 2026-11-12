@@ -13,8 +13,15 @@ pub fn in_path(name: &str) -> bool {
     })
 }
 
-/// Runs `cmd` with `sh -c` in a terminal: `$TERMINAL`, `xdg-terminal-exec`, then the first known one.
+/// `try_launchterm`, logging a failure.
 pub fn launchterm(cmd: &str) {
+    if let Err(e) = try_launchterm(cmd) {
+        warn!("{e}");
+    }
+}
+
+/// Runs `cmd` with `sh -c` in a terminal: `$TERMINAL`, `xdg-terminal-exec`, then the first known one.
+pub fn try_launchterm(cmd: &str) -> Result<(), String> {
     let term = env::var("TERMINAL").ok().filter(|t| !t.is_empty());
     let (prog, args): (String, Vec<&str>) = if let Some(t) = term {
         (t, vec!["-e"])
@@ -34,10 +41,12 @@ pub fn launchterm(cmd: &str) {
     {
         (p.into(), a)
     } else {
-        warn!("No terminal found; set $TERMINAL");
-        return;
+        return Err("No terminal found; set $TERMINAL".into());
     };
-    if let Err(e) = Command::new(&prog).args(args).args(["sh", "-c", cmd]).spawn() {
-        warn!("Failed to start terminal {}: {}", prog, e);
-    }
+    Command::new(&prog)
+        .args(args)
+        .args(["sh", "-c", cmd])
+        .spawn()
+        .map(drop)
+        .map_err(|e| format!("Failed to start terminal {prog}: {e}"))
 }

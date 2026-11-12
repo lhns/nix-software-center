@@ -511,7 +511,7 @@ async fn run_app(nix: &Nix, run: &RunJob, cancel: &Cancel, lines: &mut Lines) ->
             cwd.as_deref(),
             &target.exec.argv,
         );
-        super::term::launchterm(&script);
+        super::term::try_launchterm(&script).map_err(anyhow::Error::msg)?;
     } else {
         launch::spawn_detached(&target.exec, &env)?;
     }
