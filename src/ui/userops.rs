@@ -5,7 +5,7 @@
 use super::{
     activitylog::LogMsg,
     activitypage::ActivityMsg,
-    jobs::{self, Job, JobKind, UpdateJob},
+    jobs::{self, Job, JobKind, RunJob, UpdateJob},
     pkgpage::{InstallType, PkgAction, PkgMsg, WorkPkg},
     updatepage::UpdateType,
     window::{SystemPkgs, UserPkgs, ACTIVITYLOG_BROKER, ACTIVITY_BROKER, PKGPAGE_BROKER},
@@ -15,6 +15,7 @@ use log::*;
 use nix_data::config::configfile::NixDataConfig;
 use nsc_backend::{
     memory,
+    launch,
     ops::{self, Nix},
     pkgdb::{self, Unavailable},
     profile,
@@ -153,7 +154,7 @@ pub(super) fn changed() {
 }
 
 /// Every Done, Failed or Cancelled item ends here, whatever stopped it, so
-/// the busy marks of the installed page always clear.
+/// the busy marks of the installed page always clear. A run installs nothing, so it sends nothing.
 fn finished(job: &Job, ok: bool) {
     if let JobKind::Pkg(work) = &job.kind {
         PKGPAGE_BROKER.send(PkgMsg::JobFinished(work.clone(), ok));
@@ -196,6 +197,13 @@ pub fn enqueue(work: WorkPkg, ctx: Ctx) -> bool {
     enqueue_job(key, action, job)
 }
 
+/// Queues running a package without installing it. False when that run is already queued
+/// or running.
+pub fn enqueue_run(run: RunJob, ctx: Ctx) -> bool {
+    let key = run_key(&run.pkg);
+    enqueue_job(key, Action::Run, ctx.job(JobKind::Run(run)))
+}
+
 /// Queues an update. False when the same update is already queued or running.
 pub fn enqueue_update(update: UpdateJob, ctx: Ctx) -> bool {
     if update.scope == UpdateType::System && !nsc_backend::sources::settings().system_packages {
@@ -211,21 +219,37 @@ pub fn enqueue_update(update: UpdateJob, ctx: Ctx) -> bool {
     enqueue_job(key.to_string(), Action::Exclusive, job)
 }
 
+/// Queue key of running the package without installing it; never an install's key.
+fn run_key(pkg: &str) -> String {
+    format!("run:{pkg}")
+}
+
+/// The package's queued or running install or removal, else its run (profile only).
+fn page_item(q: &Queue<Job>, pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> Option<(Item<Job>, Status)> {
+    let by_key = |key: &str| q.key_item(key).map(|(i, s)| (i.clone(), s));
+    by_key(&pkg_key(pkg, pkgtype, userpkgs)).or_else(|| {
+        (*pkgtype == InstallType::User && *userpkgs == UserPkgs::Profile)
+            .then(|| by_key(&run_key(pkg)))
+            .flatten()
+    })
+}
+
 /// What the package's page shows while it is in the queue.
 pub fn state_label(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> Option<&'static str> {
-    let key = pkg_key(pkg, pkgtype, userpkgs);
-    with_queue(|q| q.key_item(&key).map(|(i, s)| (i.payload.is_remove(), s))).map(|s| match s {
-        (false, Status::Queued) => "Queued",
-        (false, Status::Running) => "Installing…",
-        (true, Status::Queued) => "Removal queued",
-        (true, Status::Running) => "Removing…",
+    let (item, status) = with_queue(|q| page_item(q, pkg, pkgtype, userpkgs))?;
+    Some(match (&item.payload.kind, item.payload.is_remove(), status) {
+        (JobKind::Run(_), _, Status::Queued) => "Run queued",
+        (JobKind::Run(_), _, Status::Running) => "Preparing…",
+        (_, false, Status::Queued) => "Queued",
+        (_, false, Status::Running) => "Installing…",
+        (_, true, Status::Queued) => "Removal queued",
+        (_, true, Status::Running) => "Removing…",
     })
 }
 
 /// The queued or running entry for the package, to open its log.
 pub fn active_id(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> Option<u64> {
-    let key = pkg_key(pkg, pkgtype, userpkgs);
-    with_queue(|q| q.key_item(&key).map(|(i, _)| i.id))
+    with_queue(|q| page_item(q, pkg, pkgtype, userpkgs)).map(|(i, _)| i.id)
 }
 
 /// A queued entry can always be dropped; a running one only if its job can be stopped.
@@ -235,8 +259,8 @@ pub fn can_cancel(entry: &Entry<Job>) -> bool {
 
 /// `can_cancel` for the package's queued or running entry.
 pub fn pkg_can_cancel(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> bool {
-    let key = pkg_key(pkg, pkgtype, userpkgs);
-    with_queue(|q| q.key_item(&key).map(|(i, s)| s == Status::Queued || i.payload.cancellable())).unwrap_or(false)
+    with_queue(|q| page_item(q, pkg, pkgtype, userpkgs))
+        .map_or(false, |(i, s)| s == Status::Queued || i.payload.cancellable())
 }
 
 /// Drops the queued entry, or asks the running one to stop. Once Nix has started
@@ -380,8 +404,10 @@ async fn run_job(nix: &'static Nix, batch: queue::Batch<Job>, cancel: Cancel) {
     });
     if let Some(o) = outcome {
         finished(&o.item.payload, o.result.is_ok());
-        // One refresh per completed job.
-        PKGPAGE_BROKER.send(PkgMsg::ProfileBatchDone);
+        // One refresh per completed job; a run changes nothing to refresh.
+        if o.item.action != Action::Run {
+            PKGPAGE_BROKER.send(PkgMsg::ProfileBatchDone);
+        }
     }
     changed();
     WAKE.notify_one();
@@ -438,6 +464,10 @@ async fn run_batch(nix: &Nix, batch: &queue::Batch<Job>, cancel: &Cancel) -> Bat
             Ok(names) => ops::remove(nix, &names, cancel, profile_sink(&mut lines)).await,
             Err(e) => Err(e),
         },
+        Action::Run => match &batch.item.payload.kind {
+            JobKind::Run(run) => run_app(nix, run, cancel, &mut lines).await,
+            _ => Err(anyhow::anyhow!("not a run job")),
+        },
         Action::Exclusive => {
             let mut sink = |line: String| lines.push(&line);
             jobs::run(&batch.item.payload, cancel, &mut sink).await
@@ -456,6 +486,36 @@ async fn run_batch(nix: &Nix, batch: &queue::Batch<Job>, cancel: &Cancel) -> Bat
             BatchResult::Failed(e.to_string())
         }
     }
+}
+
+/// Builds the package and starts its app or program. The outputs stay in the store without a GC
+/// root, so a garbage collection may take them; the next run builds or fetches them again.
+async fn run_app(nix: &Nix, run: &RunJob, cancel: &Cancel, lines: &mut Lines) -> Result<bool> {
+    let installable = super::sourceinfo::installable(&run.pkg).map_err(anyhow::Error::msg)?;
+    let Some(outs) = ops::build(nix, &installable, cancel, profile_sink(lines)).await? else {
+        return Ok(false);
+    };
+    if cancel.is_cancelled() {
+        return Ok(false);
+    }
+    let name = run.display_name();
+    let target =
+        launch::resolve(nix, &installable, name, &outs, run.desktop_id.as_deref(), cancel, profile_sink(lines)).await?;
+    let env = launch::current_env(&outs);
+    lines.push(&format!("Starting {}", target.path.display()));
+    if target.exec.terminal {
+        let cwd = target.exec.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
+        let script = nsc_backend::shell::terminal_script(
+            &env.path.to_string_lossy(),
+            &env.xdg_data_dirs.to_string_lossy(),
+            cwd.as_deref(),
+            &target.exec.argv,
+        );
+        super::term::launchterm(&script);
+    } else {
+        launch::spawn_detached(&target.exec, &env)?;
+    }
+    Ok(true)
 }
 
 /// Upgrades everything, after removing the entries behind `remove_first`.

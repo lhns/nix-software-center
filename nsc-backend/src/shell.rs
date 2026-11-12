@@ -6,23 +6,21 @@ pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// The `bash -c` script that starts a GTK app by desktop ID with the package's
-/// share directory on `XDG_DATA_DIRS`.
-pub fn gtk_launch(installable: &str, desktop_id: &str) -> String {
+/// The `sh -c` script for a terminal that runs a not installed program: the package's `PATH`
+/// and `XDG_DATA_DIRS` exported, the command, then a shell that still has them.
+pub fn terminal_script(path: &str, xdg_data_dirs: &str, cwd: Option<&str>, argv: &[String]) -> String {
+    let words: Vec<String> = argv.iter().map(|a| quote(a)).collect();
+    let cd = cwd.map(|c| format!("cd {}; ", quote(c))).unwrap_or_default();
     format!(
-        "env XDG_DATA_DIRS=$XDG_DATA_DIRS:$(nix eval {} --raw)/share gtk-launch {}",
-        quote(&format!("{installable}.outPath")),
-        quote(desktop_id)
+        "export PATH={} XDG_DATA_DIRS={}; {cd}{}; exec \"${{SHELL:-sh}}\"",
+        quote(path),
+        quote(xdg_data_dirs),
+        words.join(" ")
     )
 }
 
-/// A terminal command that runs `program` in a shell with the package and then stays in `$SHELL`.
-/// `nix_env` selects `nix-shell -p <pkg>` over `nix shell <installable>`.
-pub fn terminal_run(nix_env: bool, pkg: &str, installable: &str, program: &str) -> String {
+/// A terminal command that runs `program` in `nix-shell -p <pkg>` and then stays in `$SHELL`.
+pub fn terminal_run(pkg: &str, program: &str) -> String {
     let script = quote(&format!("{}; \"$SHELL\"", quote(program)));
-    if nix_env {
-        format!("nix-shell -p {} --command {}", quote(pkg), script)
-    } else {
-        format!("nix shell {} --command bash -c {}", quote(installable), script)
-    }
+    format!("nix-shell -p {} --command {}", quote(pkg), script)
 }
