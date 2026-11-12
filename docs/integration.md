@@ -41,7 +41,7 @@ progress, a log, cancel and retry. It never touches the profile.
 - Unfree apps ask for consent on every run; nothing records the acceptance.
 - What it starts, first match: the app's AppStream desktop id in the outputs'
   `share/applications`; else their only visible `.desktop` file; else `bin/<main program>`, where
-  the name is `meta.mainProgram`, else `pname` (`nix eval --raw`). Otherwise the entry fails and
+  the name is `meta.mainProgram`, else `pname`, else the name without its version (`nix eval --raw`). Otherwise the entry fails and
   suggests "Open interactive shell".
 - The outputs' `bin` and `share` go in front of `PATH` and `XDG_DATA_DIRS`. Desktop entries are
   read by the app (`Exec`, `Path`, `Terminal`), not through gtk-launch, because D-Bus activation
