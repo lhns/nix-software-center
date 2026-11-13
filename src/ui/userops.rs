@@ -237,14 +237,23 @@ fn page_item(q: &Queue<Job>, pkg: &str, pkgtype: &InstallType, userpkgs: &UserPk
 /// What the package's page shows while it is in the queue.
 pub fn state_label(pkg: &str, pkgtype: &InstallType, userpkgs: &UserPkgs) -> Option<&'static str> {
     let (item, status) = with_queue(|q| page_item(q, pkg, pkgtype, userpkgs))?;
+    let [run_queued, preparing, queued, installing, removal_queued, removing] = STATE_LABELS;
     Some(match (&item.payload.kind, item.payload.is_remove(), status) {
-        (JobKind::Run(_), _, Status::Queued) => "Run queued",
-        (JobKind::Run(_), _, Status::Running) => "Preparing…",
-        (_, false, Status::Queued) => "Queued",
-        (_, false, Status::Running) => "Installing…",
-        (_, true, Status::Queued) => "Removal queued",
-        (_, true, Status::Running) => "Removing…",
+        (JobKind::Run(_), _, Status::Queued) => run_queued,
+        (JobKind::Run(_), _, Status::Running) => preparing,
+        (_, false, Status::Queued) => queued,
+        (_, false, Status::Running) => installing,
+        (_, true, Status::Queued) => removal_queued,
+        (_, true, Status::Running) => removing,
     })
+}
+
+const STATE_LABELS: [&str; 6] =
+    ["Run queued", "Preparing…", "Queued", "Installing…", "Removal queued", "Removing…"];
+
+/// The longest `state_label`, in characters: the package page reserves it so its row keeps one width.
+pub fn state_label_chars() -> i32 {
+    STATE_LABELS.iter().map(|l| l.chars().count()).max().unwrap_or(0) as i32
 }
 
 /// The queued or running entry for the package, to open its log.
