@@ -262,6 +262,8 @@ impl Component for PkgModel {
                         // Details box
                         gtk::Box {
                             set_orientation: gtk::Orientation::Horizontal,
+                            // AdwClamp gives a non-expanding child only its natural width, which shrinks with the buttons.
+                            set_hexpand: true,
                             set_spacing: 10,
                             set_margin_all: 15,
                             append = if model.icon.is_some() {
