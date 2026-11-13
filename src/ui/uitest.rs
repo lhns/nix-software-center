@@ -289,6 +289,29 @@ pub fn start(dir: String, window: gtk::Window, input: relm4::Sender<AppMsg>) {
                 input.emit(AppMsg::UpdateRecPkgs(vec!["hello".into(), "minimal".into(), "awkward".into()]));
             }
             30 => shot("15-tile-included.png"),
+            // Package page button alignment: idle, installing, and both again in a narrow window.
+            31 => input.emit(AppMsg::OpenPkg("list-homepage".into())),
+            32 => shot("16-pkgpage-idle.png"),
+            33 => {
+                userops::with_queue(|q| {
+                    // Drop what is still waiting, or the queued update blocks the start.
+                    q.cancel_all_queued();
+                    add(q, pkg("list-homepage", PkgAction::Install));
+                    run(q);
+                });
+                userops::changed();
+            }
+            34 => shot("17-pkgpage-installing.png"),
+            35 => window2.set_default_size(560, 800),
+            36 => shot("18-pkgpage-installing-narrow.png"),
+            37 => {
+                userops::with_queue(|q| {
+                    let n = id(q, "list-homepage");
+                    q.complete(n, BatchResult::Cancelled);
+                });
+                userops::changed();
+            }
+            38 => shot("19-pkgpage-idle-narrow.png"),
             _ => {
                 relm4::main_application().quit();
                 return gtk::glib::Continue(false);

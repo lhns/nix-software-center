@@ -262,6 +262,8 @@ impl Component for PkgModel {
                         // Details box
                         gtk::Box {
                             set_orientation: gtk::Orientation::Horizontal,
+                            // AdwClamp gives a non-expanding child only its natural width, which shrinks with the buttons.
+                            set_hexpand: true,
                             set_spacing: 10,
                             set_margin_all: 15,
                             append = if model.icon.is_some() {
@@ -282,6 +284,7 @@ impl Component for PkgModel {
                             },
                             gtk::FlowBox {
                                 set_halign: gtk::Align::Fill,
+                                set_hexpand: true,
                                 set_orientation: gtk::Orientation::Horizontal,
                                 set_min_children_per_line: 1,
                                 set_max_children_per_line: 2,
@@ -341,6 +344,7 @@ impl Component for PkgModel {
                                                     #[name(userinstallstack)]
                                                     if userops::state_label(&model.pkg, &InstallType::User, &model.userpkgtype).is_some() {
                                                         gtk::Box {
+                                                            set_halign: gtk::Align::End,
                                                             set_spacing: 10,
                                                             gtk::Spinner {
                                                                 set_halign: gtk::Align::End,
@@ -350,6 +354,9 @@ impl Component for PkgModel {
                                                                 set_can_focus: false,
                                                             },
                                                             gtk::Label {
+                                                                // Reserves the width of "Installing..." so the row is as wide idle as installing.
+                                                                set_width_chars: 11,
+                                                                set_xalign: 0.0,
                                                                 set_valign: gtk::Align::Center,
                                                                 add_css_class: "dim-label",
                                                                 #[watch]
@@ -484,6 +491,7 @@ impl Component for PkgModel {
                                                     #[name(systeminstallstack)]
                                                     if userops::state_label(&model.pkg, &InstallType::System, &model.userpkgtype).is_some() {
                                                         gtk::Box {
+                                                            set_halign: gtk::Align::End,
                                                             set_spacing: 10,
                                                             gtk::Spinner {
                                                                 set_halign: gtk::Align::End,
@@ -493,6 +501,9 @@ impl Component for PkgModel {
                                                                 set_can_focus: false,
                                                             },
                                                             gtk::Label {
+                                                                // Reserves the width of "Installing..." so the row is as wide idle as installing.
+                                                                set_width_chars: 11,
+                                                                set_xalign: 0.0,
                                                                 set_valign: gtk::Align::Center,
                                                                 add_css_class: "dim-label",
                                                                 #[watch]
@@ -1127,8 +1138,13 @@ impl Component for PkgModel {
         }",
         );
         let widgets = view_output!();
-        widgets.userinstallstack.set_hhomogeneous(false);
-        widgets.systeminstallstack.set_hhomogeneous(false);
+        // relm4 builds `if` stacks non-homogeneous; the row must stay as wide in every state, or the
+        // Clamp re-centres it and the right edge (Install, Cancel) moves. Expanding makes the stack fill
+        // its wrapper Box, which would otherwise put it at the start.
+        widgets.userinstallstack.set_hhomogeneous(true);
+        widgets.systeminstallstack.set_hhomogeneous(true);
+        widgets.userinstallstack.set_hexpand(true);
+        widgets.systeminstallstack.set_hexpand(true);
 
         let mut group = RelmActionGroup::<ModeActionGroup>::new();
         let nixenv: RelmAction<NixEnvAction> = {
