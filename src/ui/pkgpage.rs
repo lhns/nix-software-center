@@ -1134,6 +1134,9 @@ impl Component for PkgModel {
         let widgets = view_output!();
         widgets.userinstallstack.set_hhomogeneous(false);
         widgets.systeminstallstack.set_hhomogeneous(false);
+        // A non-expanding stack sits at the start of its wrapper Box, which left Install short of the right edge.
+        widgets.userinstallstack.set_hexpand(true);
+        widgets.systeminstallstack.set_hexpand(true);
 
         let mut group = RelmActionGroup::<ModeActionGroup>::new();
         let nixenv: RelmAction<NixEnvAction> = {
