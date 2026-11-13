@@ -129,6 +129,30 @@ fn seed_sources() {
 second line");
 }
 
+/// Prints the bounds of the widgets in the top 200px, to see how the details row is allocated.
+fn dump(w: &gtk::Widget, root: &gtk::Widget, depth: usize) {
+    let Some(b) = w.compute_bounds(root) else { return };
+    if b.y() > 200.0 || !w.is_mapped() {
+        return;
+    }
+    println!(
+        "uitest-dump: {}{} x={:.0} y={:.0} w={:.0} h={:.0} hexp={} halign={:?}",
+        " ".repeat(depth),
+        w.type_().name(),
+        b.x(),
+        b.y(),
+        b.width(),
+        b.height(),
+        w.hexpands(),
+        w.halign()
+    );
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        dump(&c, root, depth + 1);
+        child = c.next_sibling();
+    }
+}
+
 fn toplevel<T: IsA<gtk::Window>>() -> Option<gtk::Window> {
     gtk::Window::list_toplevels()
         .into_iter()
@@ -291,15 +315,23 @@ pub fn start(dir: String, window: gtk::Window, input: relm4::Sender<AppMsg>) {
             30 => shot("15-tile-included.png"),
             // Package page button alignment: idle, installing, and both again in a narrow window.
             31 => input.emit(AppMsg::OpenPkg("list-homepage".into())),
-            32 => shot("16-pkgpage-idle.png"),
+            32 => {
+                shot("16-pkgpage-idle.png");
+                dump(window2.upcast_ref(), window2.upcast_ref(), 0);
+            }
             33 => {
                 userops::with_queue(|q| {
+                    // Drop what is still waiting, or the queued update blocks the start.
+                    q.cancel_all_queued();
                     add(q, pkg("list-homepage", PkgAction::Install));
                     run(q);
                 });
                 userops::changed();
             }
-            34 => shot("17-pkgpage-installing.png"),
+            34 => {
+                shot("17-pkgpage-installing.png");
+                dump(window2.upcast_ref(), window2.upcast_ref(), 0);
+            }
             35 => window2.set_default_size(560, 800),
             36 => shot("18-pkgpage-installing-narrow.png"),
             37 => {
