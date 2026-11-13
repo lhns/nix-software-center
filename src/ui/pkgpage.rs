@@ -282,6 +282,7 @@ impl Component for PkgModel {
                             },
                             gtk::FlowBox {
                                 set_halign: gtk::Align::Fill,
+                                set_hexpand: true,
                                 set_orientation: gtk::Orientation::Horizontal,
                                 set_min_children_per_line: 1,
                                 set_max_children_per_line: 2,
@@ -341,6 +342,7 @@ impl Component for PkgModel {
                                                     #[name(userinstallstack)]
                                                     if userops::state_label(&model.pkg, &InstallType::User, &model.userpkgtype).is_some() {
                                                         gtk::Box {
+                                                            set_halign: gtk::Align::End,
                                                             set_spacing: 10,
                                                             gtk::Spinner {
                                                                 set_halign: gtk::Align::End,
@@ -484,6 +486,7 @@ impl Component for PkgModel {
                                                     #[name(systeminstallstack)]
                                                     if userops::state_label(&model.pkg, &InstallType::System, &model.userpkgtype).is_some() {
                                                         gtk::Box {
+                                                            set_halign: gtk::Align::End,
                                                             set_spacing: 10,
                                                             gtk::Spinner {
                                                                 set_halign: gtk::Align::End,
