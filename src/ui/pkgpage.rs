@@ -1132,8 +1132,11 @@ impl Component for PkgModel {
         }",
         );
         let widgets = view_output!();
-        // Homogeneous keeps the row as wide in every state, so its right edge (Install, Cancel) does not move.
-        // Expanding makes the stack fill its wrapper Box, which would otherwise put it at the start.
+        // relm4 builds `if` stacks non-homogeneous; the row must stay as wide in every state, or the
+        // Clamp re-centres it and the right edge (Install, Cancel) moves. Expanding makes the stack fill
+        // its wrapper Box, which would otherwise put it at the start.
+        widgets.userinstallstack.set_hhomogeneous(true);
+        widgets.systeminstallstack.set_hhomogeneous(true);
         widgets.userinstallstack.set_hexpand(true);
         widgets.systeminstallstack.set_hexpand(true);
 
