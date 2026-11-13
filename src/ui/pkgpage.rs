@@ -34,10 +34,6 @@ use super::included;
 use super::window::UserPkgs;
 use super::{screenshotfactory::ScreenshotItem, window::AppMsg};
 
-/// The state label's text while nothing runs. The hidden label still sizes the row, and an empty one
-/// made it narrower than when installing, which moved Install off the right edge Cancel sits on.
-const INSTALLING: &str = "Installing\u{2026}";
-
 #[tracker::track]
 #[derive(Debug)]
 pub struct PkgModel {
@@ -358,10 +354,13 @@ impl Component for PkgModel {
                                                                 set_can_focus: false,
                                                             },
                                                             gtk::Label {
+                                                                // Reserves the width of "Installing..." so the row is as wide idle as installing.
+                                                                set_width_chars: 11,
+                                                                set_xalign: 0.0,
                                                                 set_valign: gtk::Align::Center,
                                                                 add_css_class: "dim-label",
                                                                 #[watch]
-                                                                set_label: userops::state_label(&model.pkg, &InstallType::User, &model.userpkgtype).unwrap_or(INSTALLING),
+                                                                set_label: userops::state_label(&model.pkg, &InstallType::User, &model.userpkgtype).unwrap_or(""),
                                                             },
                                                             gtk::Button {
                                                                 set_valign: gtk::Align::Center,
@@ -502,10 +501,13 @@ impl Component for PkgModel {
                                                                 set_can_focus: false,
                                                             },
                                                             gtk::Label {
+                                                                // Reserves the width of "Installing..." so the row is as wide idle as installing.
+                                                                set_width_chars: 11,
+                                                                set_xalign: 0.0,
                                                                 set_valign: gtk::Align::Center,
                                                                 add_css_class: "dim-label",
                                                                 #[watch]
-                                                                set_label: userops::state_label(&model.pkg, &InstallType::System, &model.userpkgtype).unwrap_or(INSTALLING),
+                                                                set_label: userops::state_label(&model.pkg, &InstallType::System, &model.userpkgtype).unwrap_or(""),
                                                             },
                                                             gtk::Button {
                                                                 set_valign: gtk::Align::Center,
