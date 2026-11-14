@@ -354,8 +354,8 @@ impl Component for PkgModel {
                                                                 set_can_focus: false,
                                                             },
                                                             gtk::Label {
-                                                                // Reserves the width of "Installing..." so the row is as wide idle as installing.
-                                                                set_width_chars: 11,
+                                                                // Reserves the longest state's width so the row keeps one width in every state.
+                                                                set_width_chars: userops::state_label_chars(),
                                                                 set_xalign: 0.0,
                                                                 set_valign: gtk::Align::Center,
                                                                 add_css_class: "dim-label",
@@ -501,8 +501,8 @@ impl Component for PkgModel {
                                                                 set_can_focus: false,
                                                             },
                                                             gtk::Label {
-                                                                // Reserves the width of "Installing..." so the row is as wide idle as installing.
-                                                                set_width_chars: 11,
+                                                                // Reserves the longest state's width so the row keeps one width in every state.
+                                                                set_width_chars: userops::state_label_chars(),
                                                                 set_xalign: 0.0,
                                                                 set_valign: gtk::Align::Center,
                                                                 add_css_class: "dim-label",
